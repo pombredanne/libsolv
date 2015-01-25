@@ -257,6 +257,12 @@ pgphashalgo2type(int algo)
     return REPOKEY_TYPE_SHA1;
   if (algo == 8)
     return REPOKEY_TYPE_SHA256;
+  if (algo == 9)
+    return REPOKEY_TYPE_SHA384;
+  if (algo == 10)
+    return REPOKEY_TYPE_SHA512;
+  if (algo == 11)
+    return REPOKEY_TYPE_SHA224;
   return 0;
 }
 
@@ -264,7 +270,7 @@ pgphashalgo2type(int algo)
  * hash the final trailer
  * create a "sigdata" block suitable for a call to solv_pgpverify */
 static void
-pgpsig_makesigdata(struct pgpsig *sig, unsigned char *p, int l, unsigned char *pubkey, int pubkeyl, unsigned char *userid, int useridl, void *h)
+pgpsig_makesigdata(struct pgpsig *sig, unsigned char *p, int l, unsigned char *pubkey, int pubkeyl, unsigned char *userid, int useridl, Chksum *h)
 {
   int type = sig->type;
   unsigned char b[6];
@@ -581,7 +587,7 @@ parsepubkey(Solvable *s, Repodata *data, unsigned char *p, int pl, int flags)
 	  if (p[0] == 3 && l >= 10)
 	    {
 	      unsigned int ex;
-	      void *h;
+	      Chksum *h;
 	      maxsigcr = kcr = p[1] << 24 | p[2] << 16 | p[3] << 8 | p[4];
 	      ex = 0;
 	      if (p[5] || p[6])
@@ -621,7 +627,7 @@ parsepubkey(Solvable *s, Repodata *data, unsigned char *p, int pl, int flags)
 	    }
 	  else if (p[0] == 4 && l >= 6)
 	    {
-	      void *h;
+	      Chksum *h;
 	      unsigned char hdr[3];
 	      unsigned char fp[20];
 	      char fpx[40 + 1];
@@ -656,7 +662,7 @@ parsepubkey(Solvable *s, Repodata *data, unsigned char *p, int pl, int flags)
 	  htype = pgphashalgo2type(sig.hashalgo);
 	  if (htype && sig.mpioff)
 	    {
-	      void *h = solv_chksum_create(htype);
+	      Chksum *h = solv_chksum_create(htype);
 	      pgpsig_makesigdata(&sig, p, l, pubkey, pubkeyl, userid, useridl, h);
 	      solv_chksum_free(h, 0);
 	    }
@@ -1147,10 +1153,8 @@ solvsig_free(Solvsig *ss)
   solv_free(ss);
 }
 
-#ifdef ENABLE_PGPVRFY
-
 static int
-repo_verify_sigdata_cmp(const void *va, const void *vb, void *dp)
+repo_find_all_pubkeys_cmp(const void *va, const void *vb, void *dp)
 {
   Pool *pool = dp;
   Id a = *(Id *)va;
@@ -1159,33 +1163,57 @@ repo_verify_sigdata_cmp(const void *va, const void *vb, void *dp)
   return strcmp(pool_id2str(pool, pool->solvables[b].evr), pool_id2str(pool, pool->solvables[a].evr));
 }
 
-/* warning: does not check key expiry/revokation, like gpgv or rpm */
+void
+repo_find_all_pubkeys(Repo *repo, const char *keyid, Queue *q)
+{
+  Id p;
+  Solvable *s;
+
+  queue_empty(q);
+  if (!keyid)
+    return;
+  queue_init(q);
+  FOR_REPO_SOLVABLES(repo, p, s)
+    {
+      const char *kidstr, *evr = pool_id2str(s->repo->pool, s->evr);
+
+      if (!evr || strncmp(evr, keyid + 8, 8) != 0)
+       continue;
+      kidstr = solvable_lookup_str(s, PUBKEY_KEYID);
+      if (kidstr && !strcmp(kidstr, keyid))
+        queue_push(q, p);
+    }
+  if (q->count > 1)
+    solv_sort(q->elements, q->count, sizeof(Id), repo_find_all_pubkeys_cmp, repo->pool);
+}
+
+Id
+repo_find_pubkey(Repo *repo, const char *keyid)
+{
+  Queue q;
+  Id p;
+  queue_init(&q);
+  repo_find_all_pubkeys(repo, keyid, &q);
+  p = q.count ? q.elements[0] : 0;
+  queue_free(&q);
+  return p;
+}
+
+#ifdef ENABLE_PGPVRFY
+
+/* warning: does not check key expiry/revokation, same as with gpgv or rpm */
 /* returns the Id of the pubkey that verified the signature */
 Id
 repo_verify_sigdata(Repo *repo, unsigned char *sigdata, int sigdatal, const char *keyid)
 {
   Id p;
-  Solvable *s;
   Queue q;
   int i;
 
   if (!sigdata || !keyid)
     return 0;
   queue_init(&q);
-  FOR_REPO_SOLVABLES(repo, p, s)
-    {
-      const char *evr = pool_id2str(s->repo->pool, s->evr);
-      const char *kidstr;
-
-      if (!evr || strncmp(evr, keyid + 8, 8) != 0)
-       continue;
-      kidstr = solvable_lookup_str(s, PUBKEY_KEYID);
-      if (!kidstr || strcmp(kidstr, keyid) != 0)
-        continue;
-      queue_push(&q, p);
-    }
-  if (q.count > 1)
-    solv_sort(q.elements, q.count, sizeof(Id), repo_verify_sigdata_cmp, repo->pool);
+  repo_find_all_pubkeys(repo, keyid, &q);
   for (i = 0; i < q.count; i++)
     {
       int pubdatal;
@@ -1199,7 +1227,7 @@ repo_verify_sigdata(Repo *repo, unsigned char *sigdata, int sigdatal, const char
 }
 
 Id
-solvsig_verify(Solvsig *ss, Repo *repo, void *chk)
+solvsig_verify(Solvsig *ss, Repo *repo, Chksum *chk)
 {
   struct pgpsig pgpsig;
   void *chk2;

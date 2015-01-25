@@ -225,9 +225,7 @@ extern void pool_free(Pool *pool);
 extern void pool_freeallrepos(Pool *pool, int reuseids);
 
 extern void pool_setdebuglevel(Pool *pool, int level);
-#ifdef MULTI_SEMANTICS
-extern void pool_setdisttype(Pool *pool, int disttype);
-#endif
+extern int  pool_setdisttype(Pool *pool, int disttype);
 extern int  pool_set_flag(Pool *pool, int flag, int value);
 extern int  pool_get_flag(Pool *pool, int flag);
 
@@ -346,10 +344,13 @@ void pool_search(Pool *pool, Id p, Id key, const char *match, int flags, int (*c
 void pool_clear_pos(Pool *pool);
 
 
+#define DUCHANGES_ONLYADD	1
+
 typedef struct _DUChanges {
   const char *path;
   int kbytes;
   int files;
+  int flags;
 } DUChanges;
 
 void pool_calc_duchanges(Pool *pool, Map *installedmap, DUChanges *mps, int nmps);

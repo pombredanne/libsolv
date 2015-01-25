@@ -32,8 +32,12 @@ extern int  policy_illegal_vendorchange(Solver *solv, Solvable *s1, Solvable *s2
 extern int  policy_is_illegal(Solver *solv, Solvable *s1, Solvable *s2, int ignore);
 extern void policy_findupdatepackages(Solver *solv, Solvable *s, Queue *qs, int allowall);
 extern const char *policy_illegal2str(Solver *solv, int illegal, Solvable *s, Solvable *rs);
+extern void policy_update_recommendsmap(Solver *solv);
 
 extern void policy_create_obsolete_index(Solver *solv);
+
+/* internal, do not use */
+extern void prune_to_best_version(Pool *pool, Queue *plist);
 
 
 #ifdef __cplusplus

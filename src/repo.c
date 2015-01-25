@@ -92,11 +92,13 @@ repo_empty(Repo *repo, int reuseids)
 	if (s->repo != repo)
 	  break;
       pool_free_solvable_block(pool, i + 1, repo->end - (i + 1), reuseids);
+      repo->end = i + 1;
     }
   /* zero out (i.e. free) solvables belonging to this repo */
   for (i = repo->start, s = pool->solvables + i; i < repo->end; i++, s++)
     if (s->repo == repo)
       memset(s, 0, sizeof(*s));
+  repo->end = repo->start;
   repo->nsolvables = 0;
 
   /* free all data belonging to this repo */
@@ -386,10 +388,10 @@ repo_addid_dep_hash(Repo *repo, Offset olddeps, Id id, Id marker, int size)
     }
 
   /* maintain hash and lastmarkerpos */
-  if (repo->lastidhash_idarraysize != repo->idarraysize || size * 2 > repo->lastidhash_mask || repo->lastmarker != marker)
+  if (repo->lastidhash_idarraysize != repo->idarraysize || (Hashval)size * 2 > repo->lastidhash_mask || repo->lastmarker != marker)
     {
       repo->lastmarkerpos = 0;
-      if (size * 2 > repo->lastidhash_mask)
+      if (size * 2 > (Hashval)repo->lastidhash_mask)
 	{
 	  repo->lastidhash_mask = mkmask(size < REPO_ADDID_DEP_HASHMIN ? REPO_ADDID_DEP_HASHMIN : size);
 	  repo->lastidhash = solv_realloc2(repo->lastidhash, repo->lastidhash_mask + 1, sizeof(Id));
@@ -905,12 +907,13 @@ repo_matchvalue(void *cbdata, Solvable *s, Repodata *data, Repokey *key, KeyValu
 
   if (md->matcher.match)
     {
+      const char *str;
       if (key->name == SOLVABLE_FILELIST && key->type == REPOKEY_TYPE_DIRSTRARRAY && (md->matcher.flags & SEARCH_FILES) != 0)
 	if (!datamatcher_checkbasename(&md->matcher, kv->str))
 	  return 0;
-      if (!repodata_stringify(md->pool, data, key, kv, md->flags))
+      if (!(str = repodata_stringify(md->pool, data, key, kv, md->flags)))
 	return 0;
-      if (!datamatcher_match(&md->matcher, kv->str))
+      if (!datamatcher_match(&md->matcher, str))
 	return 0;
     }
   md->stop = md->callback(md->callback_data, s, data, key, kv);

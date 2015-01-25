@@ -14,6 +14,7 @@ static int with_attr;
 static int dump_json;
 
 #include "pool.h"
+#include "chksum.h"
 #include "repo_solv.h"
 
 
@@ -50,11 +51,6 @@ dump_attr(Repo *repo, Repodata *data, Repokey *key, KeyValue *kv)
     case REPOKEY_TYPE_STR:
       printf("%s: %s\n", keyname, kv->str);
       break;
-    case REPOKEY_TYPE_MD5:
-    case REPOKEY_TYPE_SHA1:
-    case REPOKEY_TYPE_SHA256:
-      printf("%s: %s (%s)\n", keyname, repodata_chk2str(data, key->type, (unsigned char *)kv->str), pool_id2str(repo->pool, key->type));
-      break;
     case REPOKEY_TYPE_VOID:
       printf("%s: (void)\n", keyname);
       break;
@@ -89,6 +85,11 @@ dump_attr(Repo *repo, Repodata *data, Repokey *key, KeyValue *kv)
         printf("\n");
       break;
     default:
+      if (solv_chksum_len(key->type))
+	{
+	  printf("%s: %s (%s)\n", keyname, repodata_chk2str(data, key->type, (unsigned char *)kv->str), solv_chksum_type2str(key->type));
+	  break;
+	}
       printf("%s: ?\n", keyname);
       break;
     }
@@ -221,14 +222,6 @@ dump_attr_json(Repo *repo, Repodata *data, Repokey *key, KeyValue *kv, struct cb
       str = kv->str;
       printf("%s", jsonstring(pool, str));
       break;
-    case REPOKEY_TYPE_MD5:
-    case REPOKEY_TYPE_SHA1:
-    case REPOKEY_TYPE_SHA256:
-      printf("{\n");
-      printf("%*s  \"value\": %s,\n", indent, "", jsonstring(pool, repodata_chk2str(data, key->type, (unsigned char *)kv->str)));
-      printf("%*s  \"type\": %s\n", indent, "", jsonstring(pool, pool_id2str(repo->pool, key->type)));
-      printf("%*s}", indent, "");
-      break;
     case REPOKEY_TYPE_VOID:
       printf("null");
       break;
@@ -270,6 +263,14 @@ dump_attr_json(Repo *repo, Repodata *data, Repokey *key, KeyValue *kv, struct cb
         printf("%*s]", indent, "");
       break;
     default:
+      if (solv_chksum_len(key->type))
+	{
+	  printf("{\n");
+	  printf("%*s  \"value\": %s,\n", indent, "", jsonstring(pool, repodata_chk2str(data, key->type, (unsigned char *)kv->str)));
+	  printf("%*s  \"type\": %s\n", indent, "", jsonstring(pool, solv_chksum_type2str(key->type)));
+	  printf("%*s}", indent, "");
+	  break;
+	}
       printf("\"?\"");
       break;
     }
@@ -297,7 +298,7 @@ dump_repodata_cb(void *vcbdata, Solvable *s, Repodata *data, Repokey *key, KeyVa
 static void
 dump_repodata(Repo *repo)
 {
-  unsigned int i;
+  int i;
   Repodata *data;
   if (repo->nrepodata == 0)
     return;
@@ -321,7 +322,7 @@ dump_repodata(Repo *repo)
 static void
 dump_repodata_json(Repo *repo, struct cbdata *cbdata)
 {
-  unsigned int i;
+  int i;
   Repodata *data;
   if (repo->nrepodata == 0)
     return;

@@ -479,11 +479,11 @@ get_vertical_data(Repodata *data, Repokey *key, Id off, Id len)
   if (off >= data->lastverticaloffset)
     {
       off -= data->lastverticaloffset;
-      if (off + len > data->vincorelen)
+      if ((unsigned int)off + len > data->vincorelen)
 	return 0;
       return data->vincore + off;
     }
-  if (off + len > key->size)
+  if ((unsigned int)off + len > key->size)
     return 0;
   /* we now have the offset, go into vertical */
   off += data->verticaloffset[key - data->keys];
@@ -741,8 +741,13 @@ repodata_lookup_bin_checksum(Repodata *data, Id solvid, Id keyname, Id *typep)
   dp = find_key_data(data, solvid, keyname, &key);
   if (!dp)
     return 0;
-  if (!(key->type == REPOKEY_TYPE_MD5 || key->type == REPOKEY_TYPE_SHA1 || key->type == REPOKEY_TYPE_SHA256))
-    return 0;
+  switch (key->type)
+    {
+    case_CHKSUM_TYPES:
+      break;
+    default:
+      return 0;
+    }
   *typep = key->type;
   return dp;
 }
@@ -850,7 +855,7 @@ repodata_lookup_id_uninternalized(Repodata *data, Id solvid, Id keyname, Id void
  */
 
 
-int
+const char *
 repodata_stringify(Pool *pool, Repodata *data, Repokey *key, KeyValue *kv, int flags)
 {
   switch (key->type)
@@ -870,28 +875,26 @@ repodata_stringify(Pool *pool, Repodata *data, Repokey *key, KeyValue *kv, int f
 	  if (*s == ':' && s > kv->str)
 	    kv->str = s + 1;
 	}
-      return 1;
+      return kv->str;
     case REPOKEY_TYPE_STR:
-      return 1;
+      return kv->str;
     case REPOKEY_TYPE_DIRSTRARRAY:
       if (!(flags & SEARCH_FILES))
-	return 1;	/* match just the basename */
+	return kv->str;	/* match just the basename */
       if (kv->num)
-	return 1;	/* already stringified */
+	return kv->str;	/* already stringified */
       /* Put the full filename into kv->str.  */
       kv->str = repodata_dir2str(data, kv->id, kv->str);
       kv->num = 1;	/* mark stringification */
-      return 1;
-    case REPOKEY_TYPE_MD5:
-    case REPOKEY_TYPE_SHA1:
-    case REPOKEY_TYPE_SHA256:
+      return kv->str;
+    case_CHKSUM_TYPES:
       if (!(flags & SEARCH_CHECKSUMS))
 	return 0;	/* skip em */
       if (kv->num)
-	return 1;	/* already stringified */
+	return kv->str;	/* already stringified */
       kv->str = repodata_chk2str(data, key->type, (const unsigned char *)kv->str);
       kv->num = 1;	/* mark stringification */
-      return 1;
+      return kv->str;
     default:
       return 0;
     }
@@ -1091,7 +1094,8 @@ solvabledata_fetch(Solvable *s, KeyValue *kv, Id keyname)
 int
 datamatcher_init(Datamatcher *ma, const char *match, int flags)
 {
-  ma->match = match ? solv_strdup(match) : 0;
+  match = match ? solv_strdup(match) : 0;
+  ma->match = match;
   ma->flags = flags;
   ma->error = 0;
   ma->matchdata = 0;
@@ -1732,17 +1736,18 @@ dataiterator_step(Dataiterator *di)
 
       if (di->matcher.match)
 	{
+	  const char *str;
 	  /* simple pre-check so that we don't need to stringify */
 	  if (di->keyname == SOLVABLE_FILELIST && di->key->type == REPOKEY_TYPE_DIRSTRARRAY && (di->matcher.flags & SEARCH_FILES) != 0)
 	    if (!datamatcher_checkbasename(&di->matcher, di->kv.str))
 	      continue;
-	  if (!repodata_stringify(di->pool, di->data, di->key, &di->kv, di->flags))
+	  if (!(str = repodata_stringify(di->pool, di->data, di->key, &di->kv, di->flags)))
 	    {
 	      if (di->keyname && (di->key->type == REPOKEY_TYPE_FIXARRAY || di->key->type == REPOKEY_TYPE_FLEXARRAY))
 		return 1;
 	      continue;
 	    }
-	  if (!datamatcher_match(&di->matcher, di->kv.str))
+	  if (!datamatcher_match(&di->matcher, str))
 	    continue;
 	}
       else
@@ -1966,11 +1971,10 @@ dataiterator_jump_to_repo(Dataiterator *di, Repo *repo)
 int
 dataiterator_match(Dataiterator *di, Datamatcher *ma)
 {
-  if (!repodata_stringify(di->pool, di->data, di->key, &di->kv, di->flags))
+  const char *str;
+  if (!(str = repodata_stringify(di->pool, di->data, di->key, &di->kv, di->flags)))
     return 0;
-  if (!ma)
-    return 1;
-  return datamatcher_match(ma, di->kv.str);
+  return ma ? datamatcher_match(ma, str) : 1;
 }
 
 void
@@ -1982,9 +1986,7 @@ dataiterator_strdup(Dataiterator *di)
     return;
   switch (di->key->type)
     {
-    case REPOKEY_TYPE_MD5:
-    case REPOKEY_TYPE_SHA1:
-    case REPOKEY_TYPE_SHA256:
+    case_CHKSUM_TYPES:
     case REPOKEY_TYPE_DIRSTRARRAY:
       if (di->kv.num)	/* was it stringified into tmp space? */
         l = strlen(di->kv.str) + 1;
@@ -2000,14 +2002,8 @@ dataiterator_strdup(Dataiterator *di)
 	case REPOKEY_TYPE_DIRSTRARRAY:
 	  l = strlen(di->kv.str) + 1;
 	  break;
-	case REPOKEY_TYPE_MD5:
-	  l = SIZEOF_MD5;
-	  break;
-	case REPOKEY_TYPE_SHA1:
-	  l = SIZEOF_SHA1;
-	  break;
-	case REPOKEY_TYPE_SHA256:
-	  l = SIZEOF_SHA256;
+	case_CHKSUM_TYPES:
+	  l = solv_chksum_len(di->key->type);
 	  break;
 	case REPOKEY_TYPE_BINARY:
 	  l = di->kv.num;
@@ -2106,6 +2102,7 @@ repodata_extend_block(Repodata *data, Id start, Id num)
     return;
   if (!data->incoreoffset)
     {
+      /* this also means that data->attrs is NULL */
       data->incoreoffset = solv_calloc_block(num, sizeof(Id), REPODATA_BLOCK);
       data->start = start;
       data->end = start + num;
@@ -2816,6 +2813,10 @@ repodata_swap_attrs(Repodata *data, Id dest, Id src)
   Id *tmpattrs;
   if (!data->attrs || dest == src)
     return;
+  if (dest < data->start || dest >= data->end)
+    repodata_extend(data, dest);
+  if (src < data->start || src >= data->end)
+    repodata_extend(data, src);
   tmpattrs = data->attrs[dest - data->start];
   data->attrs[dest - data->start] = data->attrs[src - data->start];
   data->attrs[src - data->start] = tmpattrs;
@@ -2906,6 +2907,96 @@ data_addblob(struct extdata *xd, unsigned char *blob, int len)
 
 /*********************************/
 
+/* this is to reduct memory usage when internalizing oversized repos */
+static void
+compact_attrdata(Repodata *data, int entry, int nentry)
+{
+  int i;
+  unsigned int attrdatastart = data->attrdatalen;
+  unsigned int attriddatastart = data->attriddatalen;
+  if (attrdatastart < 1024 * 1024 * 4 && attriddatastart < 1024 * 1024)
+    return;
+  for (i = entry; i < nentry; i++)
+    {
+      Id v, *attrs = data->attrs[i];
+      if (!attrs)
+	continue;
+      for (; *attrs; attrs += 2)
+	{
+	  switch (data->keys[*attrs].type)
+	    {
+	    case REPOKEY_TYPE_STR:
+	    case REPOKEY_TYPE_BINARY:
+	    case_CHKSUM_TYPES:
+	      if ((unsigned int)attrs[1] < attrdatastart)
+		 attrdatastart = attrs[1];
+	      break;
+	    case REPOKEY_TYPE_DIRSTRARRAY:
+	      for (v = attrs[1]; data->attriddata[v] ; v += 2)
+		if (data->attriddata[v + 1] < attrdatastart)
+		  attrdatastart = data->attriddata[v + 1];
+	      /* FALLTHROUGH */
+	    case REPOKEY_TYPE_IDARRAY:
+	    case REPOKEY_TYPE_DIRNUMNUMARRAY:
+	      if ((unsigned int)attrs[1] < attriddatastart)
+		attriddatastart = attrs[1];
+	      break;
+	    case REPOKEY_TYPE_FIXARRAY:
+	    case REPOKEY_TYPE_FLEXARRAY:
+	      return;
+	    default:
+	      break;
+	    }
+	}
+    }
+#if 0
+  printf("compact_attrdata %d %d\n", entry, nentry);
+  printf("attrdatastart: %d\n", attrdatastart);
+  printf("attriddatastart: %d\n", attriddatastart);
+#endif
+  if (attrdatastart < 1024 * 1024 * 4 && attriddatastart < 1024 * 1024)
+    return;
+  for (i = entry; i < nentry; i++)
+    {
+      Id v, *attrs = data->attrs[i];
+      if (!attrs)
+	continue;
+      for (; *attrs; attrs += 2)
+	{
+	  switch (data->keys[*attrs].type)
+	    {
+	    case REPOKEY_TYPE_STR:
+	    case REPOKEY_TYPE_BINARY:
+	    case_CHKSUM_TYPES:
+	      attrs[1] -= attrdatastart;
+	      break;
+	    case REPOKEY_TYPE_DIRSTRARRAY:
+	      for (v = attrs[1]; data->attriddata[v] ; v += 2)
+		data->attriddata[v + 1] -= attrdatastart;
+	      /* FALLTHROUGH */
+	    case REPOKEY_TYPE_IDARRAY:
+	    case REPOKEY_TYPE_DIRNUMNUMARRAY:
+	      attrs[1] -= attriddatastart;
+	      break;
+	    default:
+	      break;
+	    }
+	}
+    }
+  if (attrdatastart)
+    {
+      data->attrdatalen -= attrdatastart;
+      memmove(data->attrdata, data->attrdata + attrdatastart, data->attrdatalen);
+      data->attrdata = solv_extend_resize(data->attrdata, data->attrdatalen, 1, REPODATA_ATTRDATA_BLOCK);
+    }
+  if (attriddatastart)
+    {
+      data->attriddatalen -= attriddatastart;
+      memmove(data->attriddata, data->attriddata + attriddatastart, data->attriddatalen * sizeof(Id));
+      data->attriddata = solv_extend_resize(data->attriddata, data->attriddatalen, sizeof(Id), REPODATA_ATTRIDDATA_BLOCK);
+    }
+}
+
 /* internalalize some key into incore/vincore data */
 
 static void
@@ -2940,8 +3031,17 @@ repodata_serialize_key(Repodata *data, struct extdata *newincore,
     case REPOKEY_TYPE_SHA1:
       data_addblob(xd, data->attrdata + val, SIZEOF_SHA1);
       break;
+    case REPOKEY_TYPE_SHA224:
+      data_addblob(xd, data->attrdata + val, SIZEOF_SHA224);
+      break;
     case REPOKEY_TYPE_SHA256:
       data_addblob(xd, data->attrdata + val, SIZEOF_SHA256);
+      break;
+    case REPOKEY_TYPE_SHA384:
+      data_addblob(xd, data->attrdata + val, SIZEOF_SHA384);
+      break;
+    case REPOKEY_TYPE_SHA512:
+      data_addblob(xd, data->attrdata + val, SIZEOF_SHA512);
       break;
     case REPOKEY_TYPE_NUM:
       if (val & 0x80000000)
@@ -3062,7 +3162,8 @@ repodata_internalize(Repodata *data)
 {
   Repokey *key, solvkey;
   Id entry, nentry;
-  Id schemaid, *schema, *sp, oldschema, *keyp, *keypstart, *seen;
+  Id schemaid, keyid, *schema, *sp, oldschema, *keyp, *seen;
+  int schemaidx;
   unsigned char *dp, *ndp;
   int newschema, oldcount;
   struct extdata newincore;
@@ -3072,6 +3173,11 @@ repodata_internalize(Repodata *data)
   if (!data->attrs && !data->xattrs)
     return;
 
+#if 0
+  printf("repodata_internalize %d\n", data->repodataid);
+  printf("  attr data: %d K\n", data->attrdatalen / 1024);
+  printf("  attrid data: %d K\n", data->attriddatalen / (1024 / 4));
+#endif
   newvincore.buf = data->vincore;
   newvincore.len = data->vincorelen;
 
@@ -3184,18 +3290,19 @@ fprintf(stderr, "schemadata %p\n", data->schemadata);
 	  data->mainschema = schemaid;
 	  data->mainschemaoffsets = solv_calloc(sp - schema, sizeof(Id));
 	}
-      keypstart = data->schemadata + data->schemata[schemaid];
-      for (keyp = keypstart; *keyp; keyp++)
+      /* we don't use a pointer to the schemadata here as repodata_serialize_key
+       * may call repodata_schema2id() which might realloc our schemadata */
+      for (schemaidx = data->schemata[schemaid]; (keyid = data->schemadata[schemaidx]) != 0; schemaidx++)
 	{
 	  if (entry == -1)
-	    data->mainschemaoffsets[keyp - keypstart] = newincore.len;
-	  if (*keyp == solvkeyid)
+	    data->mainschemaoffsets[schemaidx - data->schemata[schemaid]] = newincore.len;
+	  if (keyid == solvkeyid)
 	    {
 	      /* add flexarray entry count */
 	      data_addid(&newincore, data->end - data->start);
 	      break;
 	    }
-	  key = data->keys + *keyp;
+	  key = data->keys + keyid;
 #if 0
 	  fprintf(stderr, "internalize %d(%d):%s:%s\n", entry, entry + data->start, pool_id2str(data->repo->pool, key->name), pool_id2str(data->repo->pool, key->type));
 #endif
@@ -3212,26 +3319,38 @@ fprintf(stderr, "schemadata %p\n", data->schemadata);
 		ndp = data_skip_key(data, dp, key);
 	      oldcount--;
 	    }
-	  if (seen[*keyp] == -1)
+	  if (seen[keyid] == -1)
 	    {
 	      /* If this key was an old one _and_ was not overwritten with
 		 a different value copy over the old value (we skipped it
 		 above).  */
 	      if (dp != ndp)
 		data_addblob(&newincore, dp, ndp - dp);
-	      seen[*keyp] = 0;
+	      seen[keyid] = 0;
 	    }
-	  else if (seen[*keyp])
+	  else if (seen[keyid])
 	    {
-	      /* Otherwise we have a new value.  Parse it into the internal
-		 form.  */
-	      repodata_serialize_key(data, &newincore, &newvincore,
-				     schema, key, seen[*keyp] - 1);
+	      /* Otherwise we have a new value.  Parse it into the internal form.  */
+	      repodata_serialize_key(data, &newincore, &newvincore, schema, key, seen[keyid] - 1);
 	    }
 	  dp = ndp;
 	}
-      if (entry >= 0 && data->attrs && data->attrs[entry])
-	data->attrs[entry] = solv_free(data->attrs[entry]);
+      if (entry >= 0 && data->attrs)
+	{
+	  if (data->attrs[entry])
+	    data->attrs[entry] = solv_free(data->attrs[entry]);
+	  if (entry && entry % 4096 == 0 && data->nxattrs <= 2 && entry + 64 < nentry)
+	    {
+	      compact_attrdata(data, entry + 1, nentry);	/* try to free some memory */
+#if 0
+	      printf("  attr data: %d K\n", data->attrdatalen / 1024);
+	      printf("  attrid data: %d K\n", data->attriddatalen / (1024 / 4));
+	      printf("  incore data: %d K\n", newincore.len / 1024);
+	      printf("  sum: %d K\n", (newincore.len + data->attrdatalen + data->attriddatalen * 4) / 1024);
+	      /* malloc_stats(); */
+#endif
+	    }
+	}
     }
   /* free all xattrs */
   for (entry = 0; entry < data->nxattrs; entry++)
@@ -3263,6 +3382,10 @@ fprintf(stderr, "schemadata %p\n", data->schemadata);
   data->attrdatalen = 0;
   data->attriddatalen = 0;
   data->attrnum64datalen = 0;
+#if 0
+  printf("repodata_internalize %d done\n", data->repodataid);
+  printf("  incore data: %d K\n", data->incoredatalen / 1024);
+#endif
 }
 
 void
@@ -3392,9 +3515,7 @@ repodata_create_stubs(Repodata *data)
 	case REPOKEY_TYPE_NUM:
 	  repodata_set_num(sdata, SOLVID_META, di.key->name, SOLV_KV_NUM64(&di.kv));
 	  break;
-	case REPOKEY_TYPE_MD5:
-	case REPOKEY_TYPE_SHA1:
-	case REPOKEY_TYPE_SHA256:
+	case_CHKSUM_TYPES:
 	  repodata_set_bin_checksum(sdata, SOLVID_META, di.key->name, di.key->type, (const unsigned char *)di.kv.str);
 	  break;
 	case REPOKEY_TYPE_IDARRAY:

@@ -1,14 +1,61 @@
-#
-# WARNING: for perl iterator/array support you need to run
-#   sed -i -e 's/SvTYPE(tsv) == SVt_PVHV/SvTYPE(tsv) == SVt_PVHV || SvTYPE(tsv) == SVt_PVAV/'
-# on the generated c code
-#
+/*
+ * WARNING: for perl iterator/array support you need to run
+ *   sed -i -e 's/SvTYPE(tsv) == SVt_PVHV/SvTYPE(tsv) == SVt_PVHV || SvTYPE(tsv) == SVt_PVAV/'
+ * on the generated c code
+ */
 
 %module solv
 
 #ifdef SWIGRUBY
 %markfunc Pool "mark_Pool";
 #endif
+
+/*
+ * binaryblob handling
+ */
+
+%{
+typedef struct {
+  const void *data;
+  size_t len;
+} BinaryBlob;
+%}
+
+%typemap(in,noblock=1,fragment="SWIG_AsCharPtrAndSize") (const unsigned char *str, size_t len) (int res, char *buf = 0, size_t size = 0, int alloc = 0) {
+  res = SWIG_AsCharPtrAndSize($input, &buf, &size, &alloc);
+  if (!SWIG_IsOK(res)) {
+#if defined(SWIGPYTHON)
+    const void *pybuf = 0;
+    Py_ssize_t pysize = 0;
+    res = PyObject_AsReadBuffer($input, &pybuf, &pysize);
+    if (res < 0) {
+      %argument_fail(res, "BinaryBlob", $symname, $argnum);
+    } else {
+      buf = (void *)pybuf;
+      size = pysize;
+    }
+#else
+    %argument_fail(res, "const char *", $symname, $argnum);
+#endif
+  }
+  $1 = (unsigned char *)buf;
+  $2 = size;
+}
+
+%typemap(freearg,noblock=1,match="in") (const unsigned char *str, int len) {
+  if (alloc$argnum == SWIG_NEWOBJ) %delete_array(buf$argnum);
+}
+
+%typemap(out,noblock=1,fragment="SWIG_FromCharPtrAndSize") BinaryBlob {
+#if defined(SWIGPYTHON) && defined(PYTHON3)
+  $result = $1.data ? Py_BuildValue("y#", $1.data, $1.len) : SWIG_Py_Void();
+#else
+  $result = SWIG_FromCharPtrAndSize($1.data, $1.len);
+#if defined(SWIGPERL)
+  argvi++;
+#endif
+#endif
+}
 
 #if defined(SWIGPYTHON)
 %typemap(in) Queue {
@@ -65,7 +112,6 @@
 
 #endif
 
-
 #if defined(SWIGPERL)
 %typemap(in) Queue {
   AV *av;
@@ -85,10 +131,10 @@
     queue_push(&$1, v);
   }
 }
-# AV *o = newAV();
-# av_push(o, SvREFCNT_inc(SWIG_From_int($1.elements[i])));
-# $result = newRV_noinc((SV*)o); argvi++;
-#
+/* AV *o = newAV();
+ * av_push(o, SvREFCNT_inc(SWIG_From_int($1.elements[i])));
+ * $result = newRV_noinc((SV*)o); argvi++;
+ */
 %typemap(out) Queue {
   int i;
   if (argvi + $1.count + 1 >= items) {
@@ -187,7 +233,7 @@
 
 #if defined(SWIGPERL)
 
-# work around a swig bug
+/* work around a swig bug */
 %{
 #undef SWIG_CALLXS
 #ifdef PERL_OBJECT
@@ -314,7 +360,6 @@ typedef VALUE AppObjectPtr;
 #endif
 
 
-%include "cdata.i"
 #ifdef SWIGPYTHON
 %include "file.i"
 #else
@@ -376,7 +421,18 @@ SWIG_AsValDepId(void *obj, int *val) {
 
 }
 
-
+%typemap(out) disown_helper {
+#ifdef SWIGRUBY
+  SWIG_ConvertPtr(self, &argp1,SWIGTYPE_p_Pool, SWIG_POINTER_DISOWN |  0 );
+#endif
+#ifdef SWIGPYTHON
+  SWIG_ConvertPtr(obj0, &argp1,SWIGTYPE_p_Pool, SWIG_POINTER_DISOWN |  0 );
+#endif
+#ifdef SWIGPERL
+  SWIG_ConvertPtr(ST(0), &argp1,SWIGTYPE_p_Pool, SWIG_POINTER_DISOWN |  0 );
+#endif
+  $result = SWIG_From_int((int)(0));
+}
 
 %include "typemaps.i"
 
@@ -406,6 +462,7 @@ typedef int bool;
 
 #include "pool.h"
 #include "poolarch.h"
+#include "evr.h"
 #include "solver.h"
 #include "policy.h"
 #include "solverdebug.h"
@@ -440,6 +497,9 @@ typedef int bool;
 #ifdef ENABLE_ARCHREPO
 #include "repo_arch.h"
 #endif
+#ifdef SUSE
+#include "repo_autopattern.h"
+#endif
 #include "solv_xfopen.h"
 
 /* for old ruby versions */
@@ -457,7 +517,6 @@ typedef int bool;
 #define SOLVER_SOLUTION_REPLACE_VENDORCHANGE    -104
 #define SOLVER_SOLUTION_REPLACE_NAMECHANGE      -105
 
-typedef struct chksum Chksum;
 typedef void *AppObjectPtr;
 typedef Id DepId;
 
@@ -554,6 +613,8 @@ typedef struct {
 
 typedef Dataiterator Datamatch;
 
+typedef int disown_helper;
+
 %}
 
 #ifdef SWIGRUBY
@@ -567,7 +628,7 @@ typedef int Id;
 
 %include "knownid.h"
 
-# from repodata.h
+/* from repodata.h */
 %constant Id SOLVID_META;
 %constant Id SOLVID_POS;
 
@@ -585,7 +646,7 @@ typedef struct {
   Id const id;
 } Dep;
 
-# put before pool/repo so we can access the constructor
+/* put before pool/repo so we can access the constructor */
 %nodefaultdtor Dataiterator;
 typedef struct {} Dataiterator;
 
@@ -790,6 +851,7 @@ typedef struct {
   static const Id SOLVER_CLEANDEPS = SOLVER_CLEANDEPS;
   static const Id SOLVER_FORCEBEST = SOLVER_FORCEBEST;
   static const Id SOLVER_TARGETED = SOLVER_TARGETED;
+  static const Id SOLVER_NOTBYUSER = SOLVER_NOTBYUSER;
   static const Id SOLVER_SETEV = SOLVER_SETEV;
   static const Id SOLVER_SETEVR = SOLVER_SETEVR;
   static const Id SOLVER_SETARCH = SOLVER_SETARCH;
@@ -924,7 +986,7 @@ typedef struct {
 
 %extend Chksum {
   Chksum(Id type) {
-    return (Chksum *)solv_chksum_create(type);
+    return solv_chksum_create(type);
   }
   Chksum(Id type, const char *hex) {
     unsigned char buf[64];
@@ -933,19 +995,19 @@ typedef struct {
       return 0;
     if (solv_hex2bin(&hex, buf, sizeof(buf)) != l || hex[0])
       return 0;
-    return (Chksum *)solv_chksum_create_from_bin(type, buf);
+    return solv_chksum_create_from_bin(type, buf);
   }
   ~Chksum() {
     solv_chksum_free($self, 0);
   }
   Id const type;
   %{
-  SWIGINTERN Id Chksum_type_get(Chksum *chksum) {
-    return solv_chksum_get_type(chksum);
+  SWIGINTERN Id Chksum_type_get(Chksum *chk) {
+    return solv_chksum_get_type(chk);
   }
   %}
-  void add(const char *str) {
-    solv_chksum_add($self, str, strlen((char *)str));
+  void add(const unsigned char *str, size_t len) {
+    solv_chksum_add($self, str, (int)len);
   }
   void add_fp(FILE *fp) {
     char buf[4096];
@@ -979,11 +1041,14 @@ typedef struct {
     solv_chksum_add($self, &stb.st_size, sizeof(stb.st_size));
     solv_chksum_add($self, &stb.st_mtime, sizeof(stb.st_mtime));
   }
-  SWIGCDATA raw() {
+  BinaryBlob raw() {
+    BinaryBlob bl;
     int l;
     const unsigned char *b;
     b = solv_chksum_get($self, &l);
-    return cdata_void((void *)b, l);
+    bl.data = b;
+    bl.len = l;
+    return bl;
   }
   %newobject hex;
   char *hex() {
@@ -995,6 +1060,9 @@ typedef struct {
     ret = solv_malloc(2 * l + 1);
     solv_bin2hex(b, l, ret);
     return ret;
+  }
+  const char *typestr() {
+    return solv_chksum_type2str(solv_chksum_get_type($self));
   }
 
   bool __eq__(Chksum *chk) {
@@ -1050,8 +1118,6 @@ typedef struct {
   Pool() {
     Pool *pool = pool_create();
     return pool;
-  }
-  ~Pool() {
   }
   void set_debuglevel(int level) {
     pool_setdebuglevel($self, level);
@@ -1152,9 +1218,17 @@ typedef struct {
   }
 #endif
 
-  void free() {
+  ~Pool() {
     Pool_set_loadcallback($self, 0);
     pool_free($self);
+  }
+  disown_helper free() {
+    Pool_set_loadcallback($self, 0);
+    pool_free($self);
+    return 0;
+  }
+  disown_helper disown() {
+    return 0;
   }
   Id str2id(const char *str, bool create=1) {
     return pool_str2id($self, str, create);
@@ -1210,7 +1284,11 @@ typedef struct {
   }
 
   %newobject Dataiterator;
-  Dataiterator *Dataiterator(Id p, Id key, const char *match, int flags) {
+  Dataiterator *Dataiterator(Id key, const char *match = 0, int flags = 0) {
+    return new_Dataiterator($self, 0, 0, key, match, flags);
+  }
+  %newobject Dataiterator_solvid;
+  Dataiterator *Dataiterator_solvid(Id p, Id key, const char *match = 0, int flags = 0) {
     return new_Dataiterator($self, 0, p, key, match, flags);
   }
   const char *solvid2str(Id solvid) {
@@ -1317,6 +1395,15 @@ typedef struct {
 
   Id towhatprovides(Queue q) {
     return pool_queuetowhatprovides($self, &q);
+  }
+
+  %typemap(out) Queue whatmatchesdep Queue2Array(XSolvable *, 1, new_XSolvable(arg1, id));
+  %newobject whatmatchesdep;
+  Queue whatmatchesdep(Id keyname, DepId dep, Id marker = -1) {
+    Queue q;
+    queue_init(&q);
+    pool_whatmatchesdep($self, keyname, dep, &q, marker);
+    return q;
   }
 
 #ifdef SWIGRUBY
@@ -1529,13 +1616,18 @@ rb_eval_string(
     return new_XSolvable($self->pool, repo_add_arch_pkg($self, name, flags));
   }
 #endif
+#ifdef SUSE
+  bool add_autopattern(int flags = 0) {
+    return repo_add_autopattern($self, flags) == 0;
+  }
+#endif
   void internalize() {
     repo_internalize($self);
   }
   bool write(FILE *fp) {
     return repo_write($self, fp) == 0;
   }
-  # HACK, remove if no longer needed!
+  /* HACK, remove if no longer needed! */
   bool write_first_repodata(FILE *fp) {
     int oldnrepodata = $self->nrepodata;
     int res;
@@ -1546,8 +1638,12 @@ rb_eval_string(
   }
 
   %newobject Dataiterator;
-  Dataiterator *Dataiterator(Id p, Id key, const char *match, int flags) {
-    return new_Dataiterator($self->pool, $self, p, key, match, flags);
+  Dataiterator *Dataiterator(Id key, const char *match = 0, int flags = 0) {
+    return new_Dataiterator($self->pool, $self, 0, key, match, flags);
+  }
+  %newobject Dataiterator_meta;
+  Dataiterator *Dataiterator_meta(Id key, const char *match = 0, int flags = 0) {
+    return new_Dataiterator($self->pool, $self, SOLVID_META, key, match, flags);
   }
 
   Id const id;
@@ -1630,6 +1726,13 @@ rb_eval_string(
     return sel;
   }
 
+#ifdef ENABLE_PUBKEY
+  %newobject find_pubkey;
+  XSolvable *find_pubkey(const char *keyid) {
+    return new_XSolvable($self->pool, repo_find_pubkey($self, keyid));
+  }
+#endif
+
   bool __eq__(Repo *repo) {
     return $self == repo;
   }
@@ -1682,14 +1785,12 @@ rb_eval_string(
     solv_free($self);
   }
 #if defined(SWIGPYTHON)
-  %newobject __iter__;
-  Dataiterator *__iter__() {
-    Dataiterator *ndi;
-    ndi = solv_calloc(1, sizeof(*ndi));
-    dataiterator_init_clone(ndi, $self);
-    return ndi;
+  %pythoncode {
+    def __iter__(self): return self
   }
+#ifndef PYTHON3
   %rename("next") __next__();
+#endif
   %exception __next__ {
     $action
     if (!result) {
@@ -1698,11 +1799,9 @@ rb_eval_string(
     }
   }
 #endif
-
 #ifdef SWIGPERL
   perliter(solv::Dataiterator)
 #endif
-
   %newobject __next__;
   Datamatch *__next__() {
     Dataiterator *ndi;
@@ -1811,7 +1910,7 @@ rb_eval_string(
     return r;
   }
   %newobject Dataiterator;
-  Dataiterator *Dataiterator(Id key, const char *match, int flags) {
+  Dataiterator *Dataiterator(Id key, const char *match = 0, int flags = 0) {
     Pool *pool = $self->repo->pool;
     Datapos oldpos = pool->pos;
     Dataiterator *di;
@@ -1829,40 +1928,67 @@ rb_eval_string(
   }
   %newobject solvable;
   XSolvable * const solvable;
+  Id const key_id;
+  const char * const key_idstr;
+  Id const type_id;
+  const char * const type_idstr;
+  Id const id;
+  const char * const idstr;
+  const char * const str;
+  BinaryBlob const binary;
+  unsigned long long const num;
+  unsigned int const num2;
   %{
   SWIGINTERN XSolvable *Datamatch_solvable_get(Dataiterator *di) {
     return new_XSolvable(di->pool, di->solvid);
   }
+  SWIGINTERN Id Datamatch_key_id_get(Dataiterator *di) {
+    return di->key->name;
+  }
+  SWIGINTERN const char *Datamatch_key_idstr_get(Dataiterator *di) {
+    return pool_id2str(di->pool, di->key->name);
+  }
+  SWIGINTERN Id Datamatch_type_id_get(Dataiterator *di) {
+    return di->key->type;
+  }
+  SWIGINTERN const char *Datamatch_type_idstr_get(Dataiterator *di) {
+    return pool_id2str(di->pool, di->key->type);
+  }
+  SWIGINTERN Id Datamatch_id_get(Dataiterator *di) {
+    return di->kv.id;
+  }
+  SWIGINTERN const char *Datamatch_idstr_get(Dataiterator *di) {
+   if (di->data && (di->key->type == REPOKEY_TYPE_DIR || di->key->type == REPOKEY_TYPE_DIRSTRARRAY || di->key->type == REPOKEY_TYPE_DIRNUMNUMARRAY))
+      return repodata_dir2str(di->data,  di->kv.id, 0);
+    if (di->data && di->data->localpool)
+      return stringpool_id2str(&di->data->spool, di->kv.id);
+    return pool_id2str(di->pool, di->kv.id);
+  }
+  SWIGINTERN const char * const Datamatch_str_get(Dataiterator *di) {
+    return di->kv.str;
+  }
+  SWIGINTERN BinaryBlob Datamatch_binary_get(Dataiterator *di) {
+    BinaryBlob bl;
+    bl.data = 0;
+    bl.len = 0;
+    if (di->key->type == REPOKEY_TYPE_BINARY)
+      {
+        bl.data = di->kv.str;
+        bl.len = di->kv.num;
+      }
+    else if ((bl.len = solv_chksum_len(di->key->type)) != 0)
+      bl.data = di->kv.str;
+    return bl;
+  }
+  SWIGINTERN unsigned long long Datamatch_num_get(Dataiterator *di) {
+   if (di->key->type == REPOKEY_TYPE_NUM)
+     return SOLV_KV_NUM64(&di->kv);
+   return di->kv.num;
+  }
+  SWIGINTERN unsigned int Datamatch_num2_get(Dataiterator *di) {
+    return di->kv.num2;
+  }
   %}
-  Id key_id() {
-    return $self->key->name;
-  }
-  const char *key_idstr() {
-    return pool_id2str($self->pool, $self->key->name);
-  }
-  Id type_id() {
-    return $self->key->type;
-  }
-  const char *type_idstr() {
-    return pool_id2str($self->pool, $self->key->type);
-  }
-  Id id() {
-     return $self->kv.id;
-  }
-  const char *idstr() {
-     return pool_id2str($self->pool, $self->kv.id);
-  }
-  const char *str() {
-     return $self->kv.str;
-  }
-  unsigned long long num() {
-     if ($self->key->type == REPOKEY_TYPE_NUM)
-       return SOLV_KV_NUM64(&$self->kv);
-     return $self->kv.num;
-  }
-  int num2() {
-     return $self->kv.num2;
-  }
   %newobject pos;
   Datapos *pos() {
     Pool *pool = $self->pool;
@@ -1884,12 +2010,16 @@ rb_eval_string(
     return pos;
   }
 #if defined(SWIGPERL)
-  %rename("str") __str__;
+  /* cannot use str here because swig reports a bogus conflict... */
+  %rename("stringify") __str__;
+  %perlcode {
+    *solv::Datamatch::str = *solvc::Datamatch_stringify;
+  }
 #endif
   const char *__str__() {
-    if (!repodata_stringify($self->pool, $self->data, $self->key, &$self->kv, $self->flags))
-      return "";
-    return $self->kv.str;
+    KeyValue kv = $self->kv;
+    const char *str = repodata_stringify($self->pool, $self->data, $self->key, &kv, SEARCH_FILES | SEARCH_CHECKSUMS);
+    return str ? str : "";
   }
 }
 
@@ -1901,14 +2031,12 @@ rb_eval_string(
     return s;
   }
 #if defined(SWIGPYTHON)
-  %newobject __iter__;
-  Pool_solvable_iterator *__iter__() {
-    Pool_solvable_iterator *s;
-    s = solv_calloc(1, sizeof(*s));
-    *s = *$self;
-    return s;
+  %pythoncode {
+    def __iter__(self): return self
   }
+#ifndef PYTHON3
   %rename("next") __next__();
+#endif
   %exception __next__ {
     $action
     if (!result) {
@@ -1917,7 +2045,6 @@ rb_eval_string(
     }
   }
 #endif
-
 #ifdef SWIGPERL
   perliter(solv::Pool_solvable_iterator)
 #endif
@@ -1959,14 +2086,12 @@ rb_eval_string(
     return s;
   }
 #if defined(SWIGPYTHON)
-  %newobject __iter__;
-  Pool_repo_iterator *__iter__() {
-    Pool_repo_iterator *s;
-    s = solv_calloc(1, sizeof(*s));
-    *s = *$self;
-    return s;
+  %pythoncode {
+    def __iter__(self): return self
   }
+#ifndef PYTHON3
   %rename("next") __next__();
+#endif
   %exception __next__ {
     $action
     if (!result) {
@@ -1974,6 +2099,9 @@ rb_eval_string(
       return NULL;
     }
   }
+#endif
+#ifdef SWIGPERL
+  perliter(solv::Pool_repo_iterator)
 #endif
   %newobject __next__;
   Repo *__next__() {
@@ -2014,14 +2142,12 @@ rb_eval_string(
     return s;
   }
 #if defined(SWIGPYTHON)
-  %newobject __iter__;
-  Repo_solvable_iterator *__iter__() {
-    Repo_solvable_iterator *s;
-    s = solv_calloc(1, sizeof(*s));
-    *s = *$self;
-    return s;
+  %pythoncode {
+    def __iter__(self): return self
   }
+#ifndef PYTHON3
   %rename("next") __next__();
+#endif
   %exception __next__ {
     $action
     if (!result) {
@@ -2029,6 +2155,9 @@ rb_eval_string(
       return NULL;
     }
   }
+#endif
+#ifdef SWIGPERL
+  perliter(solv::Repo_solvable_iterator)
 #endif
   %newobject __next__;
   XSolvable *__next__() {
@@ -2182,7 +2311,7 @@ rb_eval_string(
     return solvable_lookup_location($self->pool->solvables + $self->id, OUTPUT);
   }
   %newobject Dataiterator;
-  Dataiterator *Dataiterator(Id key, const char *match, int flags) {
+  Dataiterator *Dataiterator(Id key, const char *match = 0, int flags = 0) {
     return new_Dataiterator($self->pool, 0, $self->id, key, match, flags);
   }
 #ifdef SWIGRUBY
@@ -2337,6 +2466,16 @@ rb_eval_string(
     Selection *sel = new_Selection($self->pool);
     queue_push2(&sel->q, SOLVER_SOLVABLE | setflags, $self->id);
     return sel;
+  }
+
+#ifdef SWIGRUBY
+  %rename("identical?") identical;
+#endif
+  bool identical(XSolvable *s2) {
+    return solvable_identical($self->pool->solvables + $self->id, s2->pool->solvables + s2->id);
+  }
+  int evrcmp(XSolvable *s2) {
+    return pool_evrcmp($self->pool, $self->pool->solvables[$self->id].evr, s2->pool->solvables[s2->id].evr, EVRCMP_COMPARE);
   }
 
   bool __eq__(XSolvable *s) {
@@ -2570,9 +2709,9 @@ rb_eval_string(
     if ($self->type == SOLVER_SOLUTION_JOB || SOLVER_SOLUTION_POOLJOB)
       return new_Job($self->solv->pool, SOLVER_NOOP, 0);
     if ($self->type == SOLVER_SOLUTION_INFARCH || $self->type == SOLVER_SOLUTION_DISTUPGRADE || $self->type == SOLVER_SOLUTION_BEST)
-      return new_Job($self->solv->pool, SOLVER_INSTALL|SOLVER_SOLVABLE|extraflags, $self->p);
+      return new_Job($self->solv->pool, SOLVER_INSTALL|SOLVER_SOLVABLE|SOLVER_NOTBYUSER|extraflags, $self->p);
     if ($self->type == SOLVER_SOLUTION_REPLACE || $self->type == SOLVER_SOLUTION_REPLACE_DOWNGRADE || $self->type == SOLVER_SOLUTION_REPLACE_ARCHCHANGE || $self->type == SOLVER_SOLUTION_REPLACE_VENDORCHANGE || $self->type == SOLVER_SOLUTION_REPLACE_NAMECHANGE)
-      return new_Job($self->solv->pool, SOLVER_INSTALL|SOLVER_SOLVABLE|extraflags, $self->rp);
+      return new_Job($self->solv->pool, SOLVER_INSTALL|SOLVER_SOLVABLE|SOLVER_NOTBYUSER|extraflags, $self->rp);
     if ($self->type == SOLVER_SOLUTION_ERASE)
       return new_Job($self->solv->pool, SOLVER_ERASE|SOLVER_SOLVABLE|extraflags, $self->p);
     return 0;
@@ -2581,16 +2720,16 @@ rb_eval_string(
 
 %extend Solver {
   static const int SOLVER_RULE_UNKNOWN = SOLVER_RULE_UNKNOWN;
-  static const int SOLVER_RULE_RPM = SOLVER_RULE_RPM;
-  static const int SOLVER_RULE_RPM_NOT_INSTALLABLE = SOLVER_RULE_RPM_NOT_INSTALLABLE;
-  static const int SOLVER_RULE_RPM_NOTHING_PROVIDES_DEP = SOLVER_RULE_RPM_NOTHING_PROVIDES_DEP;
-  static const int SOLVER_RULE_RPM_PACKAGE_REQUIRES = SOLVER_RULE_RPM_PACKAGE_REQUIRES;
-  static const int SOLVER_RULE_RPM_SELF_CONFLICT = SOLVER_RULE_RPM_SELF_CONFLICT;
-  static const int SOLVER_RULE_RPM_PACKAGE_CONFLICT = SOLVER_RULE_RPM_PACKAGE_CONFLICT;
-  static const int SOLVER_RULE_RPM_SAME_NAME = SOLVER_RULE_RPM_SAME_NAME;
-  static const int SOLVER_RULE_RPM_PACKAGE_OBSOLETES = SOLVER_RULE_RPM_PACKAGE_OBSOLETES;
-  static const int SOLVER_RULE_RPM_IMPLICIT_OBSOLETES = SOLVER_RULE_RPM_IMPLICIT_OBSOLETES;
-  static const int SOLVER_RULE_RPM_INSTALLEDPKG_OBSOLETES = SOLVER_RULE_RPM_INSTALLEDPKG_OBSOLETES;
+  static const int SOLVER_RULE_PKG = SOLVER_RULE_PKG;
+  static const int SOLVER_RULE_PKG_NOT_INSTALLABLE = SOLVER_RULE_PKG_NOT_INSTALLABLE;
+  static const int SOLVER_RULE_PKG_NOTHING_PROVIDES_DEP = SOLVER_RULE_PKG_NOTHING_PROVIDES_DEP;
+  static const int SOLVER_RULE_PKG_REQUIRES = SOLVER_RULE_PKG_REQUIRES;
+  static const int SOLVER_RULE_PKG_SELF_CONFLICT = SOLVER_RULE_PKG_SELF_CONFLICT;
+  static const int SOLVER_RULE_PKG_CONFLICTS = SOLVER_RULE_PKG_CONFLICTS;
+  static const int SOLVER_RULE_PKG_SAME_NAME = SOLVER_RULE_PKG_SAME_NAME;
+  static const int SOLVER_RULE_PKG_OBSOLETES = SOLVER_RULE_PKG_OBSOLETES;
+  static const int SOLVER_RULE_PKG_IMPLICIT_OBSOLETES = SOLVER_RULE_PKG_IMPLICIT_OBSOLETES;
+  static const int SOLVER_RULE_PKG_INSTALLED_OBSOLETES = SOLVER_RULE_PKG_INSTALLED_OBSOLETES;
   static const int SOLVER_RULE_UPDATE = SOLVER_RULE_UPDATE;
   static const int SOLVER_RULE_FEATURE = SOLVER_RULE_FEATURE;
   static const int SOLVER_RULE_JOB = SOLVER_RULE_JOB;
@@ -2632,6 +2771,14 @@ rb_eval_string(
   static const int SOLVER_FLAG_NO_INFARCHCHECK = SOLVER_FLAG_NO_INFARCHCHECK;
   static const int SOLVER_FLAG_BEST_OBEY_POLICY = SOLVER_FLAG_BEST_OBEY_POLICY;
   static const int SOLVER_FLAG_NO_AUTOTARGET = SOLVER_FLAG_NO_AUTOTARGET;
+  static const int SOLVER_FLAG_DUP_ALLOW_DOWNGRADE = SOLVER_FLAG_DUP_ALLOW_DOWNGRADE;
+  static const int SOLVER_FLAG_DUP_ALLOW_ARCHCHANGE = SOLVER_FLAG_DUP_ALLOW_ARCHCHANGE;
+  static const int SOLVER_FLAG_DUP_ALLOW_VENDORCHANGE = SOLVER_FLAG_DUP_ALLOW_VENDORCHANGE;
+  static const int SOLVER_FLAG_DUP_ALLOW_NAMECHANGE = SOLVER_FLAG_DUP_ALLOW_NAMECHANGE;
+  static const int SOLVER_FLAG_KEEP_ORPHANS = SOLVER_FLAG_KEEP_ORPHANS;
+  static const int SOLVER_FLAG_BREAK_ORPHANS = SOLVER_FLAG_BREAK_ORPHANS;
+  static const int SOLVER_FLAG_FOCUS_INSTALLED = SOLVER_FLAG_FOCUS_INSTALLED;
+  static const int SOLVER_FLAG_YUM_OBSOLETES = SOLVER_FLAG_YUM_OBSOLETES;
 
   static const int SOLVER_REASON_UNRELATED = SOLVER_REASON_UNRELATED;
   static const int SOLVER_REASON_UNIT_RULE = SOLVER_REASON_UNIT_RULE;
@@ -2644,6 +2791,9 @@ rb_eval_string(
   static const int SOLVER_REASON_RESOLVE_ORPHAN = SOLVER_REASON_RESOLVE_ORPHAN;
   static const int SOLVER_REASON_RECOMMENDED = SOLVER_REASON_RECOMMENDED;
   static const int SOLVER_REASON_SUPPLEMENTED = SOLVER_REASON_SUPPLEMENTED;
+
+  /* legacy */
+  static const int SOLVER_RULE_RPM = SOLVER_RULE_RPM;
 
   ~Solver() {
     solver_free($self);
@@ -2773,7 +2923,7 @@ rb_eval_string(
     return q;
   }
 
-  # deprecated, use newsolvables instead
+  /* deprecated, use newsolvables instead */
   %typemap(out) Queue newpackages Queue2Array(XSolvable *, 1, new_XSolvable(arg1->pool, id));
   %newobject newpackages;
   Queue newpackages() {
@@ -2785,7 +2935,7 @@ rb_eval_string(
     return q;
   }
 
-  # deprecated, use keptsolvables instead
+  /* deprecated, use keptsolvables instead */
   %typemap(out) Queue keptpackages Queue2Array(XSolvable *, 1, new_XSolvable(arg1->pool, id));
   %newobject keptpackages;
   Queue keptpackages() {

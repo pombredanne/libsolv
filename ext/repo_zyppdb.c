@@ -161,7 +161,6 @@ startElement(void *userData, const char *name, const char **atts)
 	/* parse 'type' */
 	const char *type = find_attr("type", atts);
 	s = pd->solvable = pool_id2solvable(pool, repo_add_solvable(pd->repo));
-	repodata_extend(pd->data, s - pool->solvables);
 	pd->handle = s - pool->solvables;
 	if (type)
 	  repodata_set_str(pd->data, pd->handle, PRODUCT_TYPE, type);
@@ -290,6 +289,11 @@ add_zyppdb_product(struct parsedata *pd, FILE *fp)
       if (XML_Parse(parser, buf, l, l == 0) == XML_STATUS_ERROR)
 	{
 	  pool_debug(pd->pool, SOLV_ERROR, "repo_zyppdb: %s at line %u:%u\n", XML_ErrorString(XML_GetErrorCode(parser)), (unsigned int)XML_GetCurrentLineNumber(parser), (unsigned int)XML_GetCurrentColumnNumber(parser));
+	  if (pd->solvable)
+	    {
+	      repo_free_solvable(pd->repo, pd->solvable - pd->pool->solvables, 1);
+	      pd->solvable = 0;
+	    }
 	  return;
 	}
       if (l == 0)

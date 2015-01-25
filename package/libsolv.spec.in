@@ -18,7 +18,7 @@
 Name:           libsolv
 Version:        @VERSION@
 Release:        0
-Url:            git://gitorious.org/opensuse/libsolv.git
+Url:            https://github.com/openSUSE/libsolv
 Source:         libsolv-%{version}.tar.bz2
 BuildRoot:      %{_tmppath}/%{name}-%{version}-build
 
@@ -94,7 +94,6 @@ A new approach to package dependency solving
 %package devel
 Summary:        A new approach to package dependency solving
 Group:          Development/Libraries/C and C++
-Requires:       libsolv-tools = %version
 %if !%{with disable_shared}
 Requires:       libsolv@LIBSOLV_SOVERSION@ = %version
 %endif
@@ -167,7 +166,7 @@ CMAKE_FLAGS=
 CMAKE_FLAGS="-DFEDORA=1"
 %endif
 %if 0%{?suse_version}
-CMAKE_FLAGS="-DSUSE=1"
+CMAKE_FLAGS="-DSUSE=1 -DENABLE_APPDATA=1"
 %endif
 
 cmake   $CMAKE_FLAGS \
@@ -219,9 +218,11 @@ rm -rf "$RPM_BUILD_ROOT"
 %defattr(-,root,root)
 %if 0%{?suse_version}
 %exclude %{_bindir}/helix2solv
+%exclude %{_mandir}/man1/helix2solv*
 %endif
 %exclude %{_bindir}/solv
 %{_bindir}/*
+%{_mandir}/man1/*
 
 %files devel
 %defattr(-,root,root)
@@ -236,9 +237,10 @@ rm -rf "$RPM_BUILD_ROOT"
 %{_includedir}/solv
 %if 0%{?suse_version}
 %{_bindir}/helix2solv
+%{_mandir}/man1/helix2solv*
 %endif
 %{_datadir}/cmake/Modules/*
-%{_mandir}/man?/*
+%{_mandir}/man3/*
 
 %files demo
 %defattr(-,root,root)

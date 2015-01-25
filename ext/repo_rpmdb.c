@@ -47,10 +47,14 @@
 #include "chksum.h"
 #include "repo_rpmdb.h"
 #include "repo_solv.h"
+#ifdef ENABLE_COMPLEX_DEPS
+#include "pool_parserpmrichdep.h"
+#endif
 
 /* 3: added triggers */
 /* 4: fixed triggers */
-#define RPMDB_COOKIE_VERSION 4
+/* 5: fixed checksum copying */
+#define RPMDB_COOKIE_VERSION 5
 
 #define TAG_NAME		1000
 #define TAG_VERSION		1001
@@ -61,7 +65,7 @@
 #define TAG_BUILDTIME		1006
 #define TAG_BUILDHOST		1007
 #define TAG_INSTALLTIME		1008
-#define TAG_SIZE                1009
+#define TAG_SIZE		1009
 #define TAG_DISTRIBUTION	1010
 #define TAG_VENDOR		1011
 #define TAG_LICENSE		1014
@@ -102,14 +106,14 @@
 #define TAG_BASENAMES		1117
 #define TAG_DIRNAMES		1118
 #define TAG_PAYLOADFORMAT	1124
-#define TAG_PATCHESNAME         1133
+#define TAG_PATCHESNAME		1133
 #define TAG_FILECOLORS		1140
-#define TAG_SUGGESTSNAME	1156
-#define TAG_SUGGESTSVERSION	1157
-#define TAG_SUGGESTSFLAGS	1158
-#define TAG_ENHANCESNAME	1159
-#define TAG_ENHANCESVERSION	1160
-#define TAG_ENHANCESFLAGS	1161
+#define TAG_OLDSUGGESTSNAME	1156
+#define TAG_OLDSUGGESTSVERSION	1157
+#define TAG_OLDSUGGESTSFLAGS	1158
+#define TAG_OLDENHANCESNAME	1159
+#define TAG_OLDENHANCESVERSION	1160
+#define TAG_OLDENHANCESFLAGS	1161
 
 /* rpm5 tags */
 #define TAG_DISTEPOCH		1218
@@ -117,6 +121,18 @@
 /* rpm4 tags */
 #define TAG_LONGFILESIZES	5008
 #define TAG_LONGSIZE		5009
+#define TAG_RECOMMENDNAME	5046
+#define TAG_RECOMMENDVERSION	5047
+#define TAG_RECOMMENDFLAGS	5048
+#define TAG_SUGGESTNAME		5049
+#define TAG_SUGGESTVERSION	5050
+#define TAG_SUGGESTFLAGS	5051
+#define TAG_SUPPLEMENTNAME	5052
+#define TAG_SUPPLEMENTVERSION	5053
+#define TAG_SUPPLEMENTFLAGS	5054
+#define TAG_ENHANCENAME		5055
+#define TAG_ENHANCEVERSION	5056
+#define TAG_ENHANCEFLAGS	5057
 
 /* signature tags */
 #define	TAG_SIGBASE		256
@@ -134,14 +150,15 @@
 #define DEP_STRONG		(1 << 27)
 #define DEP_PRE_IN		((1 << 6) | (1 << 9) | (1 << 10))
 #define DEP_PRE_UN		((1 << 6) | (1 << 11) | (1 << 12))
+#define DEP_RICH		(1 << 29)
 
 #define FILEFLAG_GHOST		(1 <<  6)
 
 
 #ifdef RPM5
-# define RPM_INDEX_SIZE 4
+# define RPM_INDEX_SIZE 4	/* just the rpmdbid */
 #else
-# define RPM_INDEX_SIZE 8
+# define RPM_INDEX_SIZE 8	/* rpmdbid + array index */
 #endif
 
 
@@ -391,11 +408,6 @@ setutf8string(Repodata *repodata, Id handle, Id tag, const char *str)
     repodata_set_str(repodata, handle, tag, str);
 }
 
-
-#define MAKEDEPS_FILTER_WEAK	(1 << 0)
-#define MAKEDEPS_FILTER_STRONG	(1 << 1)
-#define MAKEDEPS_NO_RPMLIB	(1 << 2)
-
 /*
  * strong: 0: ignore strongness
  *         1: filter to strong
@@ -410,10 +422,42 @@ makedeps(Pool *pool, Repo *repo, RpmHead *rpmhead, int tagn, int tagv, int tagf,
   int haspre, premask;
   unsigned int olddeps;
   Id *ida;
-  int strong;
+  int strong = 0;
 
-  strong = flags & (MAKEDEPS_FILTER_STRONG|MAKEDEPS_FILTER_WEAK);
   n = headstringarray(rpmhead, tagn, &nc);
+  if (!n)
+    {
+      switch (tagn)
+	{
+	case TAG_SUGGESTNAME:
+	  tagn = TAG_OLDSUGGESTSNAME;
+	  tagv = TAG_OLDSUGGESTSVERSION;
+	  tagf = TAG_OLDSUGGESTSFLAGS;
+	  strong = -1;
+	  break;
+	case TAG_ENHANCENAME:
+	  tagn = TAG_OLDENHANCESNAME;
+	  tagv = TAG_OLDENHANCESVERSION;
+	  tagf = TAG_OLDENHANCESFLAGS;
+	  strong = -1;
+	  break;
+	case TAG_RECOMMENDNAME:
+	  tagn = TAG_OLDSUGGESTSNAME;
+	  tagv = TAG_OLDSUGGESTSVERSION;
+	  tagf = TAG_OLDSUGGESTSFLAGS;
+	  strong = 1;
+	  break;
+	case TAG_SUPPLEMENTNAME:
+	  tagn = TAG_OLDENHANCESNAME;
+	  tagv = TAG_OLDENHANCESVERSION;
+	  tagf = TAG_OLDENHANCESFLAGS;
+	  strong = 1;
+	  break;
+	default:
+	  return 0;
+	}
+      n = headstringarray(rpmhead, tagn, &nc);
+    }
   if (!n || !nc)
     return 0;
   vc = fc = 0;
@@ -432,16 +476,16 @@ makedeps(Pool *pool, Repo *repo, RpmHead *rpmhead, int tagn, int tagv, int tagf,
 
   cc = nc;
   haspre = 0;	/* add no prereq marker */
-  premask = DEP_PRE_IN | DEP_PRE_UN;
-  if (flags)
+  premask = tagn == TAG_REQUIRENAME ? DEP_PRE_IN | DEP_PRE_UN : 0;
+  if ((flags & RPM_ADD_NO_RPMLIBREQS) || strong)
     {
       /* we do filtering */
       cc = 0;
       for (i = 0; i < nc; i++)
 	{
-	  if (strong && (f[i] & DEP_STRONG) != (strong == MAKEDEPS_FILTER_WEAK ? 0 : DEP_STRONG))
+	  if (strong && (f[i] & DEP_STRONG) != (strong < 0 ? 0 : DEP_STRONG))
 	    continue;
-	  if ((flags & MAKEDEPS_NO_RPMLIB) != 0)
+	  if ((flags & RPM_ADD_NO_RPMLIBREQS) != 0)
 	    if (!strncmp(n[i], "rpmlib(", 7))
 	      continue;
 	  if ((f[i] & premask) != 0)
@@ -449,7 +493,7 @@ makedeps(Pool *pool, Repo *repo, RpmHead *rpmhead, int tagn, int tagv, int tagf,
 	  cc++;
 	}
     }
-  else if (tagn == TAG_REQUIRENAME)
+  else if (premask)
     {
       /* no filtering, just look for the first prereq */
       for (i = 0; i < nc; i++)
@@ -471,6 +515,7 @@ makedeps(Pool *pool, Repo *repo, RpmHead *rpmhead, int tagn, int tagv, int tagf,
   ida = repo->idarraydata + olddeps;
   for (i = 0; ; i++)
     {
+      Id id;
       if (i == nc)
 	{
 	  if (haspre != 1)
@@ -479,34 +524,47 @@ makedeps(Pool *pool, Repo *repo, RpmHead *rpmhead, int tagn, int tagv, int tagf,
 	  i = 0;
 	  *ida++ = SOLVABLE_PREREQMARKER;
 	}
-      if (strong && (f[i] & DEP_STRONG) != (strong == MAKEDEPS_FILTER_WEAK ? 0 : DEP_STRONG))
+      if (strong && (f[i] & DEP_STRONG) != (strong < 0 ? 0 : DEP_STRONG))
 	continue;
-      if (haspre == 1 && (f[i] & premask) != 0)
-	continue;
-      if (haspre == 2 && (f[i] & premask) == 0)
-	continue;
-      if ((flags & MAKEDEPS_NO_RPMLIB) != 0)
+      if (haspre)
+	{
+	  if (haspre == 1 && (f[i] & premask) != 0)
+	    continue;
+	  if (haspre == 2 && (f[i] & premask) == 0)
+	    continue;
+	}
+      if ((flags & RPM_ADD_NO_RPMLIBREQS) != 0)
 	if (!strncmp(n[i], "rpmlib(", 7))
 	  continue;
+#ifdef ENABLE_COMPLEX_DEPS
+      if ((f[i] & (DEP_RICH|DEP_LESS| DEP_EQUAL|DEP_GREATER)) == DEP_RICH && n[i][0] == '(')
+	{
+	  id = pool_parserpmrichdep(pool, n[i]);
+	  if (id)
+	    *ida++ = id;
+	  else
+	    cc--;
+	  continue;
+	}
+#endif
+      id = pool_str2id(pool, n[i], 1);
       if (f[i] & (DEP_LESS|DEP_GREATER|DEP_EQUAL))
 	{
-	  Id name, evr;
-	  int flags = 0;
+	  Id evr;
+	  int fl = 0;
 	  if ((f[i] & DEP_LESS) != 0)
-	    flags |= REL_LT;
+	    fl |= REL_LT;
 	  if ((f[i] & DEP_EQUAL) != 0)
-	    flags |= REL_EQ;
+	    fl |= REL_EQ;
 	  if ((f[i] & DEP_GREATER) != 0)
-	    flags |= REL_GT;
-	  name = pool_str2id(pool, n[i], 1);
+	    fl |= REL_GT;
 	  if (v[i][0] == '0' && v[i][1] == ':' && v[i][2])
 	    evr = pool_str2id(pool, v[i] + 2, 1);
 	  else
 	    evr = pool_str2id(pool, v[i], 1);
-	  *ida++ = pool_rel2id(pool, name, evr, flags, 1);
+	  id = pool_rel2id(pool, id, evr, fl, 1);
 	}
-      else
-        *ida++ = pool_str2id(pool, n[i], 1);
+      *ida++ = id;
     }
   *ida++ = 0;
   repo->idarraysize += cc + 1;
@@ -644,7 +702,7 @@ adddudata(Repodata *data, Id handle, RpmHead *rpmhead, char **dn, unsigned int *
   for (i = 0; i < fc; i++)
     {
       if (di[i] >= dc)
-	continue;
+	continue;	/* corrupt entry */
       fn[di[i]]++;
       if (fsz[i] == 0 || !S_ISREG(fm[i]))
 	continue;
@@ -673,8 +731,23 @@ adddudata(Repodata *data, Id handle, RpmHead *rpmhead, char **dn, unsigned int *
   solv_free(fkb);
 }
 
+static int
+is_filtered(const char *dir)
+{
+  if (!dir)
+    return 1;
+  /* the dirs always have a trailing / in rpm */
+  if (strstr(dir, "bin/"))
+    return 0;
+  if (!strncmp(dir, "/etc/", 5))
+    return 0;
+  if (!strcmp(dir, "/usr/lib/"))
+    return 2;
+  return 1;
+}
+
 static void
-addfilelist(Repodata *data, Id handle, RpmHead *rpmhead)
+addfilelist(Repodata *data, Id handle, RpmHead *rpmhead, int flags)
 {
   char **bn;
   char **dn;
@@ -682,7 +755,8 @@ addfilelist(Repodata *data, Id handle, RpmHead *rpmhead)
   int bnc, dnc, dic;
   int i;
   Id lastdid = 0;
-  int lastdii = -1;
+  unsigned int lastdii = -1;
+  int lastfiltered = 0;
 
   if (!data)
     return;
@@ -719,14 +793,27 @@ addfilelist(Repodata *data, Id handle, RpmHead *rpmhead)
 	did = lastdid;
       else
 	{
-	  did = repodata_str2dir(data, dn[di[i]], 1);
+	  if (di[i] >= dnc)
+	    continue;	/* corrupt entry */
+	  lastdii = di[i];
+	  if ((flags & RPM_ADD_FILTERED_FILELIST) != 0)
+	    {
+	      lastfiltered = is_filtered(dn[di[i]]);
+	      if (lastfiltered == 1)
+		continue;
+	    }
+	  did = repodata_str2dir(data, dn[lastdii], 1);
 	  if (!did)
 	    did = repodata_str2dir(data, "/", 1);
 	  lastdid = did;
-	  lastdii = di[i];
 	}
       if (b && *b == '/')	/* work around rpm bug */
 	b++;
+      if (lastfiltered)
+	{
+	  if (lastfiltered != 2 || strcmp(b, "sendmail"))
+	    continue;
+	}
       repodata_add_dirstr(data, handle, SOLVABLE_FILELIST, did, b);
     }
   solv_free(bn);
@@ -852,14 +939,15 @@ rpm2solv(Pool *pool, Repo *repo, Repodata *data, Solvable *s, RpmHead *rpmhead, 
   s->provides = makedeps(pool, repo, rpmhead, TAG_PROVIDENAME, TAG_PROVIDEVERSION, TAG_PROVIDEFLAGS, 0);
   if (s->arch != ARCH_SRC && s->arch != ARCH_NOSRC)
     s->provides = repo_addid_dep(repo, s->provides, pool_rel2id(pool, s->name, s->evr, REL_EQ, 1), 0);
-  s->requires = makedeps(pool, repo, rpmhead, TAG_REQUIRENAME, TAG_REQUIREVERSION, TAG_REQUIREFLAGS, (flags & RPM_ADD_NO_RPMLIBREQS) ? MAKEDEPS_NO_RPMLIB : 0);
+  s->requires = makedeps(pool, repo, rpmhead, TAG_REQUIRENAME, TAG_REQUIREVERSION, TAG_REQUIREFLAGS, flags);
   s->conflicts = makedeps(pool, repo, rpmhead, TAG_CONFLICTNAME, TAG_CONFLICTVERSION, TAG_CONFLICTFLAGS, 0);
   s->obsoletes = makedeps(pool, repo, rpmhead, TAG_OBSOLETENAME, TAG_OBSOLETEVERSION, TAG_OBSOLETEFLAGS, 0);
 
-  s->recommends = makedeps(pool, repo, rpmhead, TAG_SUGGESTSNAME, TAG_SUGGESTSVERSION, TAG_SUGGESTSFLAGS, MAKEDEPS_FILTER_STRONG);
-  s->suggests = makedeps(pool, repo, rpmhead, TAG_SUGGESTSNAME, TAG_SUGGESTSVERSION, TAG_SUGGESTSFLAGS, MAKEDEPS_FILTER_WEAK);
-  s->supplements = makedeps(pool, repo, rpmhead, TAG_ENHANCESNAME, TAG_ENHANCESVERSION, TAG_ENHANCESFLAGS, MAKEDEPS_FILTER_STRONG);
-  s->enhances  = makedeps(pool, repo, rpmhead, TAG_ENHANCESNAME, TAG_ENHANCESVERSION, TAG_ENHANCESFLAGS, MAKEDEPS_FILTER_WEAK);
+  s->recommends = makedeps(pool, repo, rpmhead, TAG_RECOMMENDNAME, TAG_RECOMMENDVERSION, TAG_RECOMMENDFLAGS, 0);
+  s->suggests = makedeps(pool, repo, rpmhead, TAG_SUGGESTNAME, TAG_SUGGESTVERSION, TAG_SUGGESTFLAGS, 0);
+  s->supplements = makedeps(pool, repo, rpmhead, TAG_SUPPLEMENTNAME, TAG_SUPPLEMENTVERSION, TAG_SUPPLEMENTFLAGS, 0);
+  s->enhances  = makedeps(pool, repo, rpmhead, TAG_ENHANCENAME, TAG_ENHANCEVERSION, TAG_ENHANCEFLAGS, 0);
+
   s->supplements = repo_fix_supplements(repo, s->provides, s->supplements, 0);
   s->conflicts = repo_fix_conflicts(repo, s->conflicts);
 
@@ -947,7 +1035,7 @@ rpm2solv(Pool *pool, Repo *repo, Repodata *data, Solvable *s, RpmHead *rpmhead, 
 	    }
 	}
       if ((flags & RPM_ADD_NO_FILELIST) == 0)
-	addfilelist(data, handle, rpmhead);
+	addfilelist(data, handle, rpmhead, flags);
       if ((flags & RPM_ADD_WITH_CHANGELOG) != 0)
 	addchangelog(data, handle, rpmhead);
     }
@@ -971,6 +1059,7 @@ struct rpmdbstate {
   DB_ENV *dbenv;	/* database environment */
   DB *db;		/* packages database */
   int byteswapped;	/* endianess of packages database */
+  int is_ostree;	/* read-only db that lives in /usr/share/rpm */
 };
 
 struct rpmdbentry {
@@ -1014,10 +1103,41 @@ static inline void rpmdbid2db(unsigned char *db, Id id, int byteswapped)
 #endif
 }
 
+#ifdef FEDORA
+int
+serialize_dbenv_ops(struct rpmdbstate *state)
+{
+  char lpath[PATH_MAX];
+  mode_t oldmask;
+  int fd;
+  struct flock fl;
+
+  snprintf(lpath, PATH_MAX, "%s/var/lib/rpm/.dbenv.lock", state->rootdir ? state->rootdir : "");
+  oldmask = umask(022);
+  fd = open(lpath, (O_RDWR|O_CREAT), 0644);
+  umask(oldmask);
+  if (fd < 0)
+    return -1;
+  memset(&fl, 0, sizeof(fl));
+  fl.l_type = F_WRLCK;
+  fl.l_whence = SEEK_SET;
+  for (;;)
+    {
+      if (fcntl(fd, F_SETLKW, &fl) != -1)
+	return fd;
+      if (errno != EINTR)
+	break;
+    }
+  close(fd);
+  return -1;
+}
+#endif
+
 /* should look in /usr/lib/rpm/macros instead, but we want speed... */
 static int
-opendbenv(struct rpmdbstate *state, const char *rootdir)
+opendbenv(struct rpmdbstate *state)
 {
+  const char *rootdir = state->rootdir;
   char dbpath[PATH_MAX];
   DB_ENV *dbenv = 0;
   int r;
@@ -1030,12 +1150,19 @@ opendbenv(struct rpmdbstate *state, const char *rootdir)
   snprintf(dbpath, PATH_MAX, "%s/var/lib/rpm", rootdir ? rootdir : "");
   if (access(dbpath, W_OK) == -1)
     {
+      snprintf(dbpath, PATH_MAX, "%s/usr/share/rpm/Packages", rootdir ? rootdir : "");
+      if (access(dbpath, R_OK) == 0)
+	state->is_ostree = 1;
+      snprintf(dbpath, PATH_MAX, "%s%s", rootdir ? rootdir : "", state->is_ostree ? "/usr/share/rpm" : "/var/lib/rpm");
       r = dbenv->open(dbenv, dbpath, DB_CREATE|DB_PRIVATE|DB_INIT_MPOOL, 0);
     }
   else
     {
 #ifdef FEDORA
+      int serialize_fd = serialize_dbenv_ops(state);
       r = dbenv->open(dbenv, dbpath, DB_CREATE|DB_INIT_CDB|DB_INIT_MPOOL, 0644);
+      if (serialize_fd >= 0)
+	close(serialize_fd);
 #else
       r = dbenv->open(dbenv, dbpath, DB_CREATE|DB_PRIVATE|DB_INIT_MPOOL, 0);
 #endif
@@ -1050,20 +1177,45 @@ opendbenv(struct rpmdbstate *state, const char *rootdir)
   return 1;
 }
 
+static void
+closedbenv(struct rpmdbstate *state)
+{
+#ifdef FEDORA
+  uint32_t eflags = 0;
+#endif
+
+  if (!state->dbenv)
+    return;
+#ifdef FEDORA
+  (void)state->dbenv->get_open_flags(state->dbenv, &eflags);
+  if (!(eflags & DB_PRIVATE))
+    {
+      int serialize_fd = serialize_dbenv_ops(state);
+      state->dbenv->close(state->dbenv, 0);
+      if (serialize_fd >= 0)
+	close(serialize_fd);
+    }
+  else
+    state->dbenv->close(state->dbenv, 0);
+#else
+  state->dbenv->close(state->dbenv, 0);
+#endif
+  state->dbenv = 0;
+}
+
 static int
 openpkgdb(struct rpmdbstate *state)
 {
   if (state->dbopened)
     return state->dbopened > 0 ? 1 : 0;
   state->dbopened = -1;
-  if (!state->dbenv && !opendbenv(state, state->rootdir))
+  if (!state->dbenv && !opendbenv(state))
     return 0;
   if (db_create(&state->db, state->dbenv, 0))
     {
       pool_error(state->pool, 0, "db_create: %s", strerror(errno));
       state->db = 0;
-      state->dbenv->close(state->dbenv, 0);
-      state->dbenv = 0;
+      closedbenv(state);
       return 0;
     }
   if (state->db->open(state->db, 0, "Packages", 0, DB_UNKNOWN, DB_RDONLY, 0664))
@@ -1071,8 +1223,7 @@ openpkgdb(struct rpmdbstate *state)
       pool_error(state->pool, 0, "db->open Packages: %s", strerror(errno));
       state->db->close(state->db, 0);
       state->db = 0;
-      state->dbenv->close(state->dbenv, 0);
-      state->dbenv = 0;
+      closedbenv(state);
       return 0;
     }
   if (state->db->get_byteswapped(state->db, &state->byteswapped))
@@ -1080,8 +1231,7 @@ openpkgdb(struct rpmdbstate *state)
       pool_error(state->pool, 0, "db->get_byteswapped: %s", strerror(errno));
       state->db->close(state->db, 0);
       state->db = 0;
-      state->dbenv->close(state->dbenv, 0);
-      state->dbenv = 0;
+      closedbenv(state);
       return 0;
     }
   state->dbopened = 1;
@@ -1112,7 +1262,7 @@ getinstalledrpmdbids(struct rpmdbstate *state, const char *index, const char *ma
   if (namedatap)
     *namedatap = 0;
 
-  if (!state->dbenv && !opendbenv(state, state->rootdir))
+  if (!state->dbenv && !opendbenv(state))
     return 0;
   dbenv = state->dbenv;
   if (db_create(&db, dbenv, 0))
@@ -1278,12 +1428,12 @@ freestate(struct rpmdbstate *state)
   /* close down */
   if (!state)
     return;
-  if (state->rootdir)
-    solv_free(state->rootdir);
   if (state->db)
     state->db->close(state->db, 0);
   if (state->dbenv)
-    state->dbenv->close(state->dbenv, 0);
+    closedbenv(state);
+  if (state->rootdir)
+    solv_free(state->rootdir);
   solv_free(state->rpmhead);
 }
 
@@ -1306,8 +1456,9 @@ rpm_state_free(void *state)
 }
 
 static int
-count_headers(Pool *pool, const char *rootdir, DB_ENV *dbenv)
+count_headers(struct rpmdbstate *state)
 {
+  Pool *pool = state->pool;
   char dbpath[PATH_MAX];
   struct stat statbuf;
   DB *db = 0;
@@ -1316,12 +1467,12 @@ count_headers(Pool *pool, const char *rootdir, DB_ENV *dbenv)
   DBT dbkey;
   DBT dbdata;
 
-  snprintf(dbpath, PATH_MAX, "%s/var/lib/rpm/Name", rootdir ? rootdir : "");
+  snprintf(dbpath, PATH_MAX, "%s%s/Name", state->rootdir ? state->rootdir : "", state->is_ostree ? "/usr/share/rpm" : "/var/lib/rpm");
   if (stat(dbpath, &statbuf))
     return 0;
   memset(&dbkey, 0, sizeof(dbkey));
   memset(&dbdata, 0, sizeof(dbdata));
-  if (db_create(&db, dbenv, 0))
+  if (db_create(&db, state->dbenv, 0))
     {
       pool_error(pool, 0, "db_create: %s", strerror(errno));
       return 0;
@@ -1469,6 +1620,11 @@ solvable_copy_cb(void *vcbdata, Solvable *r, Repodata *fromdata, Repokey *key, K
       repodata_add_flexarray(data, cbdata->subhandle, keyname, cbdata->handle);
       break;
     default:
+      if (solv_chksum_len(key->type))
+	{
+	  repodata_set_bin_checksum(data, handle, keyname, key->type, (const unsigned char *)kv->str);
+	  break;
+	}
       break;
     }
   return 0;
@@ -1510,9 +1666,9 @@ solvable_copy(Solvable *s, Solvable *r, Repodata *data, Id *dircache)
 #else
   FOR_REPODATAS(fromrepo, i, data)
     {
-      if (p < data->start || p >= data->end)
-	continue;
-      repodata_search(data, p, 0, SEARCH_SUB | SEARCH_ARRAYSENTINEL, solvable_copy_cb, &cbdata);
+      if (p >= data->start && p < data->end)
+        repodata_search(data, p, 0, SEARCH_SUB | SEARCH_ARRAYSENTINEL, solvable_copy_cb, &cbdata);
+      cbdata.dircache = 0;	/* only for first repodata */
     }
 #endif
 }
@@ -1566,12 +1722,24 @@ swap_solvables(Repo *repo, Repodata *data, Id pa, Id pb)
 }
 
 static void
-mkrpmdbcookie(struct stat *st, unsigned char *cookie)
+mkrpmdbcookie(struct stat *st, unsigned char *cookie, int flags)
 {
+  int f = 0;
   memset(cookie, 0, 32);
   cookie[3] = RPMDB_COOKIE_VERSION;
   memcpy(cookie + 16, &st->st_ino, sizeof(st->st_ino));
   memcpy(cookie + 24, &st->st_dev, sizeof(st->st_dev));
+  if ((flags & RPM_ADD_WITH_PKGID) != 0)
+    f |= 1;
+  if ((flags & RPM_ADD_WITH_HDRID) != 0)
+    f |= 2;
+  if ((flags & RPM_ADD_WITH_CHANGELOG) != 0)
+    f |= 4;
+  if ((flags & RPM_ADD_NO_FILELIST) == 0)
+    f |= 8;
+  if ((flags & RPM_ADD_NO_RPMLIBREQS) != 0)
+    cookie[1] = 1;
+  cookie[0] = f;
 }
 
 /*
@@ -1590,7 +1758,6 @@ repo_add_rpmdb(Repo *repo, Repo *ref, int flags)
   Id oldcookietype = 0;
   Repodata *data;
   int count = 0, done = 0;
-  const char *rootdir = 0;
   struct rpmdbstate state;
   int i;
   Solvable *s;
@@ -1599,6 +1766,8 @@ repo_add_rpmdb(Repo *repo, Repo *ref, int flags)
   now = solv_timems(0);
   memset(&state, 0, sizeof(state));
   state.pool = pool;
+  if (flags & REPO_USE_ROOTDIR)
+    state.rootdir = solv_strdup(pool_get_rootdir(pool));
 
   data = repo_add_repodata(repo, flags);
 
@@ -1609,20 +1778,21 @@ repo_add_rpmdb(Repo *repo, Repo *ref, int flags)
       ref = 0;
     }
 
-  if (flags & REPO_USE_ROOTDIR)
-    rootdir = pool_get_rootdir(pool);
-  if (!opendbenv(&state, rootdir))
-    return -1;
+  if (!opendbenv(&state))
+    {
+      solv_free(state.rootdir);
+      return -1;
+    }
 
   /* XXX: should get ro lock of Packages database! */
-  snprintf(dbpath, PATH_MAX, "%s/var/lib/rpm/Packages", rootdir ? rootdir : "");
+  snprintf(dbpath, PATH_MAX, "%s%s/Packages", state.rootdir ? state.rootdir : "", state.is_ostree ? "/usr/share/rpm" : "/var/lib/rpm");
   if (stat(dbpath, &packagesstat))
     {
       pool_error(pool, -1, "%s: %s", dbpath, strerror(errno));
       freestate(&state);
       return -1;
     }
-  mkrpmdbcookie(&packagesstat, newcookie);
+  mkrpmdbcookie(&packagesstat, newcookie, flags);
   repodata_set_bin_checksum(data, SOLVID_META, REPOSITORY_RPMDBCOOKIE, REPOKEY_TYPE_SHA256, newcookie);
 
   if (ref)
@@ -1636,7 +1806,7 @@ repo_add_rpmdb(Repo *repo, Repo *ref, int flags)
       if (ref && (flags & RPMDB_EMPTY_REFREPO) != 0)
 	repo_empty(ref, 1);	/* get it out of the way */
       if ((flags & RPMDB_REPORT_PROGRESS) != 0)
-	count = count_headers(pool, rootdir, state.dbenv);
+	count = count_headers(&state);
       if (!openpkgdb(&state))
 	{
 	  freestate(&state);
@@ -1807,7 +1977,7 @@ repo_add_rpmdb(Repo *repo, Repo *ref, int flags)
 	  if (res <= 0)
 	    {
 	      if (!res)
-	        return pool_error(pool, -1, "inconsistent rpm database, key %d not found. run 'rpm --rebuilddb' to fix.", dbid);
+	        pool_error(pool, -1, "inconsistent rpm database, key %d not found. run 'rpm --rebuilddb' to fix.", dbid);
 	      freestate(&state);
 	      solv_free(entries);
 	      solv_free(namedata);
@@ -1895,8 +2065,8 @@ repo_add_rpm(Repo *repo, const char *rpm, int flags)
   unsigned char hdrid[32];
   int pkgidtype, leadsigidtype, hdridtype;
   Id chksumtype = 0;
-  void *chksumh = 0;
-  void *leadsigchksumh = 0;
+  Chksum *chksumh = 0;
+  Chksum *leadsigchksumh = 0;
   int forcebinary = 0;
 
   data = repo_add_repodata(repo, flags);
@@ -2116,8 +2286,7 @@ repo_add_rpm(Repo *repo, const char *rpm, int flags)
       repodata_set_bin_checksum(data, s - pool->solvables, SOLVABLE_CHECKSUM, chksumtype, solv_chksum_get(chksumh, 0));
       chksumh = solv_chksum_free(chksumh, 0);
     }
-  if (rpmhead)
-    solv_free(rpmhead);
+  solv_free(rpmhead);
   if (!(flags & REPO_NO_INTERNALIZE))
     repodata_internalize(data);
   return s - pool->solvables;

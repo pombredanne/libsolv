@@ -172,9 +172,18 @@ solvable_lookup_str_base(Solvable *s, Id keyname, Id basekeyname, int usebase)
 	    return str;
 	}
 #ifdef ENABLE_LINKED_PKGS
-      /* autopattern translation magic */
-      if (pass && !strncmp("pattern:", pool_id2str(pool, name), 8) && (name = find_autopattern_name(pool, s)) != 0)
-	pass = -1;
+      /* autopattern/product translation magic */
+      if (pass)
+	{
+	  const char *n = pool_id2str(pool, name);
+	  if (*n == 'p')
+	    {
+	      if (!strncmp("pattern:", n, 8) && (name = find_autopattern_name(pool, s)) != 0)
+		pass = -1;
+	      if (!strncmp("product:", n, 8) && (name = find_autoproduct_name(pool, s)) != 0)
+		pass = -1;
+	    }
+	}
 #endif
     }
   return usebase ? basestr : 0;
@@ -404,7 +413,7 @@ static inline Id dep2name(Pool *pool, Id dep)
 {
   while (ISRELDEP(dep))
     {
-      Reldep *rd = rd = GETRELDEP(pool, dep);
+      Reldep *rd = GETRELDEP(pool, dep);
       dep = rd->name;
     }
   return dep;
@@ -736,22 +745,28 @@ pool_create_state_maps(Pool *pool, Queue *installed, Map *installedmap, Map *con
 /* Tests if two solvables have identical content. Currently
  * both solvables need to come from the same pool
  */
+
 int
 solvable_identical(Solvable *s1, Solvable *s2)
 {
   unsigned int bt1, bt2;
   Id rq1, rq2;
   Id *reqp;
-
   if (s1->name != s2->name)
     return 0;
   if (s1->arch != s2->arch)
     return 0;
   if (s1->evr != s2->evr)
     return 0;
-  /* map missing vendor to empty string */
+
+  /* check vendor, map missing vendor to empty string */
   if ((s1->vendor ? s1->vendor : 1) != (s2->vendor ? s2->vendor : 1))
-    return 0;
+    {
+      /* workaround for bug 881493 */
+      if (s1->repo && !strncmp(pool_id2str(s1->repo->pool, s1->name), "product:", 8))
+	return 1;
+      return 0;
+    }
 
   /* looking good, try some fancier stuff */
   /* might also look up the package checksum here */
@@ -764,6 +779,13 @@ solvable_identical(Solvable *s1, Solvable *s2)
     }
   else
     {
+      if (s1->repo)
+	{
+          /* workaround for bugs 881493 and 885830*/
+	  const char *n = pool_id2str(s1->repo->pool, s1->name);
+	  if (!strncmp(n, "product:", 8) || !strncmp(n, "application:", 12))
+	    return 1;
+	}
       /* look at requires in a last attempt to find recompiled packages */
       rq1 = rq2 = 0;
       if (s1->requires)

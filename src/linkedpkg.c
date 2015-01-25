@@ -47,18 +47,23 @@ find_application_link(Pool *pool, Solvable *s, Id *reqidp, Queue *qr, Id *prvidp
   Id req = 0;
   Id prv = 0;
   Id p, pp;
+  Id pkgname = 0;
 
   /* find appdata requires */
   if (s->requires)
     {
+      Id appdataid = 0;
       Id *reqp = s->repo->idarraydata + s->requires;
       while ((req = *reqp++) != 0)            /* go through all requires */
 	{
 	  if (ISRELDEP(req))
 	    continue;
 	  if (!strncmp("appdata(", pool_id2str(pool, req), 8))
-	    break;
+	    appdataid = req;
+	  else
+	    pkgname = req;
 	}
+      req = appdataid;
     }
   if (!req)
     return;
@@ -77,16 +82,24 @@ find_application_link(Pool *pool, Solvable *s, Id *reqidp, Queue *qr, Id *prvidp
 	}
     }
   if (!prv)
-    return;
+    return;	/* huh, no provides found? */
   /* now link em */
   FOR_PROVIDES(p, pp, req)
     if (pool->solvables[p].repo == s->repo)
-      queue_push(qr, p);
+      if (!pkgname || pool->solvables[p].name == pkgname)
+        queue_push(qr, p);
+  if (!qr->count && pkgname)
+    {
+      /* huh, no matching package? try without pkgname filter */
+      FOR_PROVIDES(p, pp, req)
+	if (pool->solvables[p].repo == s->repo)
+          queue_push(qr, p);
+    }
   if (qp)
     {
       FOR_PROVIDES(p, pp, prv)
 	if (pool->solvables[p].repo == s->repo)
-	  queue_push(qp, pp);
+	  queue_push(qp, p);
     }
   if (reqidp)
     *reqidp = req;
@@ -212,6 +225,9 @@ find_pattern_link(Pool *pool, Solvable *s, Id *reqidp, Queue *qr, Id *prvidp, Qu
     *prvidp = aprel;
 }
 
+/* the following two functions are used in solvable_lookup_str_base to do
+ * translated lookups on the product/pattern packages
+ */
 Id
 find_autopattern_name(Pool *pool, Solvable *s)
 {
@@ -224,6 +240,22 @@ find_autopattern_name(Pool *pool, Solvable *s)
         Reldep *rd = GETRELDEP(pool, prv);
         if (rd->flags == REL_EQ && !strcmp(pool_id2str(pool, rd->name), "autopattern()"))
           return strncmp(pool_id2str(pool, rd->evr), "pattern:", 8) != 0 ? rd->evr : 0;
+      }
+  return 0;
+}
+
+Id
+find_autoproduct_name(Pool *pool, Solvable *s)
+{
+  Id prv, *prvp;
+  if (!s->provides)
+    return 0;
+  for (prvp = s->repo->idarraydata + s->provides; (prv = *prvp++) != 0; )
+    if (ISRELDEP(prv))
+      {
+        Reldep *rd = GETRELDEP(pool, prv);
+        if (rd->flags == REL_EQ && !strcmp(pool_id2str(pool, rd->name), "autoproduct()"))
+          return strncmp(pool_id2str(pool, rd->evr), "product:", 8) != 0 ? rd->evr : 0;
       }
   return 0;
 }

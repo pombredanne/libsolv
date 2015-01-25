@@ -39,7 +39,7 @@ struct _Solver {
   Repo *installed;			/* copy of pool->installed */
 
   /* list of rules, ordered
-   * rpm rules first, then features, updates, jobs, learnt
+   * pkg rules first, then features, updates, jobs, learnt
    * see start/end offsets below
    */
   Rule *rules;				/* all rules */
@@ -49,7 +49,7 @@ struct _Solver {
 
   /* start/end offset for rule 'areas' */
 
-  Id rpmrules_end;                      /* [Offset] rpm rules end */
+  Id pkgrules_end;                      /* [Offset] dep rules end */
 
   Id featurerules;			/* feature rules start/end */
   Id featurerules_end;
@@ -69,6 +69,10 @@ struct _Solver {
   Id bestrules;				/* rules from SOLVER_FORCEBEST */
   Id bestrules_end;
   Id *bestrules_pkg;
+
+  Id yumobsrules;			/* rules from yum obsoletes handling */
+  Id yumobsrules_end;
+  Id *yumobsrules_info;			/* the dependency for each rule */
 
   Id choicerules;			/* choice rules (always weak) */
   Id choicerules_end;
@@ -109,6 +113,7 @@ struct _Solver {
 					 * > 0: level of decision when installed,
 					 * < 0: level of decision when conflict */
 
+  int decisioncnt_jobs;
   int decisioncnt_update;
   int decisioncnt_keep;
   int decisioncnt_resolve;
@@ -133,10 +138,12 @@ struct _Solver {
   Map recommendsmap;			/* recommended packages from decisionmap */
   Map suggestsmap;			/* suggested packages from decisionmap */
   int recommends_index;			/* recommendsmap/suggestsmap is created up to this level */
+  Queue *recommendscplxq;
+  Queue *suggestscplxq;
 
   Id *obsoletes;			/* obsoletes for each installed solvable */
   Id *obsoletes_data;			/* data area for obsoletes */
-  Id *multiversionupdaters;		/* updaters for multiversion packages in updatesystem mode */
+  Id *specialupdaters;			/* updaters for packages with a limited update rule */
 
   /*-------------------------------------------------------------------------------------------------------------
    * Solver configuration
@@ -157,7 +164,8 @@ struct _Solver {
   int keepexplicitobsoletes;		/* true: honor obsoletes during multiinstall */
   int bestobeypolicy;			/* true: stay in policy with the best rules */
   int noautotarget;			/* true: do not assume targeted for up/dup jobs that contain no installed solvable */
-
+  int focus_installed;			/* true: resolve update rules first */
+  int do_yum_obsoletes;			/* true: add special yumobs rules */
 
   Map dupmap;				/* dup these packages*/
   int dupmap_all;			/* dup all packages */
@@ -181,8 +189,11 @@ struct _Solver {
 
   Queue *installsuppdepq;		/* deps from the install namespace provides hack */
 
-  Queue addedmap_deduceq;		/* deduce addedmap from rpm rules */
+  Queue addedmap_deduceq;		/* deduce addedmap from pkg rules */
   Id *instbuddy;			/* buddies of installed packages */
+  int keep_orphans;			/* how to treat orphans */
+  int break_orphans;			/* how to treat orphans */
+  Queue *brokenorphanrules;		/* broken rules of orphaned packages */
 #endif	/* LIBSOLV_INTERNAL */
 };
 
@@ -232,6 +243,9 @@ typedef struct _Solver Solver;
  * contain an "installed" package unless the
  * NO_AUTOTARGET solver flag is set */
 #define SOLVER_TARGETED			0x200000
+/* This (SOLVER_INSTALL) job was automatically added
+ * and thus does not the add to the userinstalled packages */
+#define SOLVER_NOTBYUSER		0x400000
 
 #define SOLVER_SETEV			0x01000000
 #define SOLVER_SETEVR			0x02000000
@@ -273,6 +287,17 @@ typedef struct _Solver Solver;
 #define SOLVER_FLAG_KEEP_EXPLICIT_OBSOLETES	11
 #define SOLVER_FLAG_BEST_OBEY_POLICY		12
 #define SOLVER_FLAG_NO_AUTOTARGET		13
+#define SOLVER_FLAG_DUP_ALLOW_DOWNGRADE		14
+#define SOLVER_FLAG_DUP_ALLOW_ARCHCHANGE	15
+#define SOLVER_FLAG_DUP_ALLOW_VENDORCHANGE	16
+#define SOLVER_FLAG_DUP_ALLOW_NAMECHANGE	17
+#define SOLVER_FLAG_KEEP_ORPHANS		18
+#define SOLVER_FLAG_BREAK_ORPHANS		19
+#define SOLVER_FLAG_FOCUS_INSTALLED		20
+#define SOLVER_FLAG_YUM_OBSOLETES		21
+
+#define GET_USERINSTALLED_NAMES			(1 << 0)	/* package names instead if ids */
+#define GET_USERINSTALLED_INVERTED		(1 << 1)	/* autoinstalled */
 
 extern Solver *solver_create(Pool *pool);
 extern void solver_free(Solver *solv);
@@ -289,6 +314,8 @@ extern void solver_get_decisionblock(Solver *solv, int level, Queue *decisionq);
 extern void solver_get_orphaned(Solver *solv, Queue *orphanedq);
 extern void solver_get_recommendations(Solver *solv, Queue *recommendationsq, Queue *suggestionsq, int noselected);
 extern void solver_get_unneeded(Solver *solv, Queue *unneededq, int filtered);
+extern void solver_get_userinstalled(Solver *solv, Queue *q, int flags);
+extern void pool_add_userinstalled_jobs(Pool *pool, Queue *q, Queue *job, int flags);
 
 extern int  solver_describe_decision(Solver *solv, Id p, Id *infop);
 extern void solver_describe_weakdep_decision(Solver *solv, Id p, Queue *whyq);

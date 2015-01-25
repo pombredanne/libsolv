@@ -160,6 +160,10 @@ enableweakrules(Solver *solv)
 	continue;
       solver_enablerule(solv, r);
     }
+  /* make sure broken orphan rules stay disabled */
+  if (solv->brokenorphanrules)
+    for (i = 0; i < solv->brokenorphanrules->count; i++)
+      solver_disablerule(solv, solv->rules + solv->brokenorphanrules->elements[i]);
 }
 
 
@@ -584,7 +588,7 @@ create_solutions(Solver *solv, int probnr, int solidx)
 {
   Pool *pool = solv->pool;
   Queue redoq;
-  Queue problem, solution, problems_save;
+  Queue problem, solution, problems_save, branches_save;
   int i, j, nsol;
   int essentialok;
   unsigned int now;
@@ -615,6 +619,10 @@ create_solutions(Solver *solv, int probnr, int solidx)
   /* save problems queue */
   problems_save = solv->problems;
   memset(&solv->problems, 0, sizeof(solv->problems));
+
+  /* save branches queue */
+  branches_save = solv->problems;
+  memset(&solv->branches, 0, sizeof(solv->branches));
 
   /* extract problem from queue */
   queue_init(&problem);
@@ -712,6 +720,10 @@ create_solutions(Solver *solv, int probnr, int solidx)
   /* restore problems */
   queue_free(&solv->problems);
   solv->problems = problems_save;
+
+  /* restore branches */
+  queue_free(&solv->branches);
+  solv->branches = branches_save;
 
   if (solv->cleandeps_mistakes)
     {
@@ -850,7 +862,7 @@ solver_take_solutionelement(Solver *solv, Id p, Id rp, Id extrajobflags, Queue *
   if (rp <= 0 && p <= 0)
     return;	/* just in case */
   if (rp > 0)
-    p = SOLVER_INSTALL|SOLVER_SOLVABLE|extrajobflags;
+    p = SOLVER_INSTALL|SOLVER_SOLVABLE|SOLVER_NOTBYUSER|extrajobflags;
   else
     {
       rp = p;
@@ -885,6 +897,7 @@ findproblemrule_internal(Solver *solv, Id idx, Id *reqrp, Id *conrp, Id *sysrp, 
   Rule *r;
   Id jobassert = 0;
   int i, reqset = 0;	/* 0: unset, 1: installed, 2: jobassert, 3: assert */
+  int conset = 0;	/* 0: unset, 1: installed */
 
   /* find us a jobassert rule */
   for (i = idx; (rid = solv->learnt_pool.elements[i]) != 0; i++)
@@ -913,7 +926,7 @@ findproblemrule_internal(Solver *solv, Id idx, Id *reqrp, Id *conrp, Id *sysrp, 
 	  MAPSET(rseen, rid - solv->learntrules);
 	  findproblemrule_internal(solv, solv->learnt_why.elements[rid - solv->learntrules], &lreqr, &lconr, &lsysr, &ljobr, rseen);
 	}
-      else if ((rid >= solv->jobrules && rid < solv->jobrules_end) || (rid >= solv->infarchrules && rid < solv->infarchrules_end) || (rid >= solv->duprules && rid < solv->duprules_end) || (rid >= solv->bestrules && rid < solv->bestrules_end))
+      else if ((rid >= solv->jobrules && rid < solv->jobrules_end) || (rid >= solv->infarchrules && rid < solv->infarchrules_end) || (rid >= solv->duprules && rid < solv->duprules_end) || (rid >= solv->bestrules && rid < solv->bestrules_end) || (rid >= solv->yumobsrules && rid <= solv->yumobsrules_end))
 	{
 	  if (!*jobrp)
 	    *jobrp = rid;
@@ -925,11 +938,21 @@ findproblemrule_internal(Solver *solv, Id idx, Id *reqrp, Id *conrp, Id *sysrp, 
 	}
       else
 	{
-	  assert(rid < solv->rpmrules_end);
+	  assert(rid < solv->pkgrules_end);
 	  r = solv->rules + rid;
 	  d = r->d < 0 ? -r->d - 1 : r->d;
 	  if (!d && r->w2 < 0)
 	    {
+	      /* prefer conflicts of installed packages */
+	      if (solv->installed && !conset)
+		{
+		  if (r->p < 0 && (solv->pool->solvables[-r->p].repo == solv->installed ||
+		                  solv->pool->solvables[-r->w2].repo == solv->installed))
+		    {
+		      *conrp = rid;
+		      conset = 1;
+		    }
+		}
 	      if (!*conrp)
 		*conrp = rid;
 	    }
@@ -993,6 +1016,28 @@ solver_findproblemrule(Solver *solv, Id problem)
   map_init(&rseen, solv->learntrules ? solv->nrules - solv->learntrules : 0);
   findproblemrule_internal(solv, idx, &reqr, &conr, &sysr, &jobr, &rseen);
   map_free(&rseen);
+  /* check if the request is about a not-installed package requiring a installed
+   * package conflicting with the non-installed package. In that case return the conflict */
+  if (reqr && conr && solv->installed && solv->rules[reqr].p < 0 && solv->rules[conr].p < 0 && solv->rules[conr].w2 < 0)
+    {
+      Pool *pool = solv->pool;
+      Solvable *s  = pool->solvables - solv->rules[reqr].p;
+      Solvable *s1 = pool->solvables - solv->rules[conr].p;
+      Solvable *s2 = pool->solvables - solv->rules[conr].w2;
+      Id cp = 0;
+      if (s == s1 && s2->repo == solv->installed)
+	cp = -solv->rules[conr].w2;
+      else if (s == s2 && s1->repo == solv->installed)
+	cp = -solv->rules[conr].p;
+      if (cp && s1->name != s2->name && s->repo != solv->installed)
+	{
+	  Id p, pp;
+	  Rule *r = solv->rules + reqr;
+	  FOR_RULELITERALS(p, pp, r)
+	    if (p == cp)
+	      return conr;
+	}
+    }
   if (reqr)
     return reqr;	/* some requires */
   if (conr)
@@ -1066,38 +1111,46 @@ solver_problemruleinfo2str(Solver *solv, SolverRuleinfo type, Id source, Id targ
       return pool_tmpjoin(pool, "package ", pool_dep2str(pool, dep), " does not exist");
     case SOLVER_RULE_JOB_PROVIDED_BY_SYSTEM:
       return pool_tmpjoin(pool, pool_dep2str(pool, dep), " is provided by the system", 0);
-    case SOLVER_RULE_RPM:
+    case SOLVER_RULE_PKG:
       return "some dependency problem";
-    case SOLVER_RULE_RPM_NOT_INSTALLABLE:
+    case SOLVER_RULE_BEST:
+      if (source > 0)
+        return pool_tmpjoin(pool, "cannot install the best update candidate for package ", pool_solvid2str(pool, source), 0);
+     return "cannot install the best candidate for the job";
+    case SOLVER_RULE_PKG_NOT_INSTALLABLE:
       return pool_tmpjoin(pool, "package ", pool_solvid2str(pool, source), " is not installable");
-    case SOLVER_RULE_RPM_NOTHING_PROVIDES_DEP:
+    case SOLVER_RULE_PKG_NOTHING_PROVIDES_DEP:
       s = pool_tmpjoin(pool, "nothing provides ", pool_dep2str(pool, dep), 0);
       return pool_tmpappend(pool, s, " needed by ", pool_solvid2str(pool, source));
-    case SOLVER_RULE_RPM_SAME_NAME:
+    case SOLVER_RULE_PKG_SAME_NAME:
       s = pool_tmpjoin(pool, "cannot install both ", pool_solvid2str(pool, source), 0);
       return pool_tmpappend(pool, s, " and ", pool_solvid2str(pool, target));
-    case SOLVER_RULE_RPM_PACKAGE_CONFLICT:
+    case SOLVER_RULE_PKG_CONFLICTS:
       s = pool_tmpjoin(pool, "package ", pool_solvid2str(pool, source), 0);
       s = pool_tmpappend(pool, s, " conflicts with ", pool_dep2str(pool, dep));
       return pool_tmpappend(pool, s, " provided by ", pool_solvid2str(pool, target));
-    case SOLVER_RULE_RPM_PACKAGE_OBSOLETES:
+    case SOLVER_RULE_PKG_OBSOLETES:
       s = pool_tmpjoin(pool, "package ", pool_solvid2str(pool, source), 0);
       s = pool_tmpappend(pool, s, " obsoletes ", pool_dep2str(pool, dep));
       return pool_tmpappend(pool, s, " provided by ", pool_solvid2str(pool, target));
-    case SOLVER_RULE_RPM_INSTALLEDPKG_OBSOLETES:
+    case SOLVER_RULE_PKG_INSTALLED_OBSOLETES:
       s = pool_tmpjoin(pool, "installed package ", pool_solvid2str(pool, source), 0);
       s = pool_tmpappend(pool, s, " obsoletes ", pool_dep2str(pool, dep));
       return pool_tmpappend(pool, s, " provided by ", pool_solvid2str(pool, target));
-    case SOLVER_RULE_RPM_IMPLICIT_OBSOLETES:
+    case SOLVER_RULE_PKG_IMPLICIT_OBSOLETES:
       s = pool_tmpjoin(pool, "package ", pool_solvid2str(pool, source), 0);
       s = pool_tmpappend(pool, s, " implicitly obsoletes ", pool_dep2str(pool, dep));
       return pool_tmpappend(pool, s, " provided by ", pool_solvid2str(pool, target));
-    case SOLVER_RULE_RPM_PACKAGE_REQUIRES:
+    case SOLVER_RULE_PKG_REQUIRES:
       s = pool_tmpjoin(pool, "package ", pool_solvid2str(pool, source), " requires ");
       return pool_tmpappend(pool, s, pool_dep2str(pool, dep), ", but none of the providers can be installed");
-    case SOLVER_RULE_RPM_SELF_CONFLICT:
+    case SOLVER_RULE_PKG_SELF_CONFLICT:
       s = pool_tmpjoin(pool, "package ", pool_solvid2str(pool, source), " conflicts with ");
       return pool_tmpappend(pool, s, pool_dep2str(pool, dep), " provided by itself");
+    case SOLVER_RULE_YUMOBS:
+      s = pool_tmpjoin(pool, "both package ", pool_solvid2str(pool, source), " and ");
+      s = pool_tmpjoin(pool, s, pool_solvid2str(pool, target), " obsolete ");
+      return pool_tmpappend(pool, s, pool_dep2str(pool, dep), 0);
     default:
       return "bad problem rule type";
     }

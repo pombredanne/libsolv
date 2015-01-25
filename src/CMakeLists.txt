@@ -17,7 +17,7 @@ SET (libsolv_SRCS
     bitmap.c poolarch.c poolvendor.c poolid.c strpool.c dirpool.c
     solver.c solverdebug.c repo_solv.c repo_write.c evr.c pool.c
     queue.c repo.c repodata.c repopage.c util.c policy.c solvable.c
-    transaction.c rules.c problems.c linkedpkg.c
+    transaction.c rules.c problems.c linkedpkg.c cplxdeps.c
     chksum.c md5.c sha1.c sha2.c solvversion.c selection.c)
 
 SET (libsolv_HEADERS
@@ -39,7 +39,7 @@ ENDIF (DISABLE_SHARED)
 SET_TARGET_PROPERTIES(libsolv PROPERTIES OUTPUT_NAME "solv")
 SET_TARGET_PROPERTIES(libsolv PROPERTIES SOVERSION ${LIBSOLV_SOVERSION})
 
-INSTALL (FILES ${libsolv_HEADERS} DESTINATION "${CMAKE_INSTALL_PREFIX}/include/solv")
+INSTALL (FILES ${libsolv_HEADERS} DESTINATION "${INCLUDE_INSTALL_DIR}/solv")
 INSTALL (TARGETS libsolv LIBRARY DESTINATION ${LIB_INSTALL_DIR} ARCHIVE DESTINATION ${LIB_INSTALL_DIR})
 
 IF (ENABLE_STATIC AND NOT DISABLE_SHARED)

@@ -84,6 +84,9 @@
 #include "repo_susetags.h"
 #include "repo_content.h"
 #endif
+#ifdef SUSE
+#include "repo_autopattern.h"
+#endif
 #include "solv_xfopen.h"
 
 #ifdef FEDORA
@@ -213,7 +216,6 @@ yum_substitute(Pool *pool, char *line)
 #define TYPE_PLAINDIR	3
 #define TYPE_DEBIAN     4
 
-#ifndef NOSYSTEM
 static int
 read_repoinfos_sort(const void *ap, const void *bp)
 {
@@ -221,7 +223,6 @@ read_repoinfos_sort(const void *ap, const void *bp)
   const struct repoinfo *b = bp;
   return strcmp(a->alias, b->alias);
 }
-#endif
 
 #if defined(SUSE) || defined(FEDORA)
 
@@ -475,15 +476,6 @@ read_repoinfos(Pool *pool, int *nrepoinfosp)
 
 #endif
 
-#ifdef NOSYSTEM
-struct repoinfo *
-read_repoinfos(Pool *pool, int *nrepoinfosp)
-{
-  *nrepoinfosp = 0;
-  return 0;
-}
-#endif
-
 
 void
 free_repoinfos(struct repoinfo *repoinfos, int nrepoinfos)
@@ -527,7 +519,7 @@ verify_checksum(int fd, const char *file, const unsigned char *chksum, Id chksum
 {
   char buf[1024];
   const unsigned char *sum;
-  void *h;
+  Chksum *h;
   int l;
 
   h = solv_chksum_create(chksumtype);
@@ -1049,7 +1041,7 @@ void
 calc_checksum_fp(FILE *fp, Id chktype, unsigned char *out)
 {
   char buf[4096];
-  void *h = solv_chksum_create(chktype);
+  Chksum *h = solv_chksum_create(chktype);
   int l;
 
   solv_chksum_add(h, CHKSUM_IDENT, strlen(CHKSUM_IDENT));
@@ -1062,7 +1054,7 @@ calc_checksum_fp(FILE *fp, Id chktype, unsigned char *out)
 void
 calc_checksum_stat(struct stat *stb, Id chktype, unsigned char *cookie, unsigned char *out)
 {
-  void *h = solv_chksum_create(chktype);
+  Chksum *h = solv_chksum_create(chktype);
   solv_chksum_add(h, CHKSUM_IDENT, strlen(CHKSUM_IDENT));
   if (cookie)
     solv_chksum_add(h, cookie, 32);
@@ -1730,6 +1722,7 @@ read_repos(Pool *pool, struct repoinfo *repoinfos, int nrepoinfos)
 #endif
 
   repo = repo_create(pool, "@System");
+  memset(&stb, 0, sizeof(stb));
 #if defined(ENABLE_RPMDB) && (defined(SUSE) || defined(FEDORA))
   printf("rpm database:");
   if (stat(pool_prepend_rootdir_tmp(pool, "/var/lib/rpm/Packages"), &stb))
@@ -1739,10 +1732,6 @@ read_repos(Pool *pool, struct repoinfo *repoinfos, int nrepoinfos)
   printf("dpgk database:");
   if (stat(pool_prepend_rootdir_tmp(pool, "/var/lib/dpkg/status"), &stb))
     memset(&stb, 0, sizeof(stb));
-#endif
-#ifdef NOSYSTEM
-  printf("no installed database:");
-  memset(&stb, 0, sizeof(stb));
 #endif
   calc_checksum_stat(&stb, REPOKEY_TYPE_SHA256, 0, installedcookie);
   if (usecachedrepo(repo, 0, installedcookie, 0))
@@ -1756,21 +1745,21 @@ read_repos(Pool *pool, struct repoinfo *repoinfos, int nrepoinfos)
 
 #if defined(ENABLE_RPMDB) && (defined(SUSE) || defined(FEDORA))
 # if defined(ENABLE_SUSEREPO) && defined(PRODUCTS_PATH)
-      if (repo_add_products(repo, PRODUCTS_PATH, REPO_NO_INTERNALIZE | REPO_USE_ROOTDIR))
+      if (repo_add_products(repo, PRODUCTS_PATH, REPO_REUSE_REPODATA | REPO_NO_INTERNALIZE | REPO_USE_ROOTDIR))
 	{
 	  fprintf(stderr, "product reading failed: %s\n", pool_errstr(pool));
 	  exit(1);
 	}
 # endif
 # if defined(ENABLE_APPDATA)
-      if (repo_add_appdata_dir(repo, APPDATA_PATH, REPO_NO_INTERNALIZE | REPO_USE_ROOTDIR))
+      if (repo_add_appdata_dir(repo, APPDATA_PATH, REPO_REUSE_REPODATA | REPO_NO_INTERNALIZE | REPO_USE_ROOTDIR))
 	{
 	  fprintf(stderr, "appdata reading failed: %s\n", pool_errstr(pool));
 	  exit(1);
 	}
 # endif
       ofp = fopen(calccachepath(repo, 0, 0), "r");
-      if (repo_add_rpmdb_reffp(repo, ofp, REPO_REUSE_REPODATA | REPO_USE_ROOTDIR))
+      if (repo_add_rpmdb_reffp(repo, ofp, REPO_REUSE_REPODATA | REPO_NO_INTERNALIZE | REPO_USE_ROOTDIR))
 	{
 	  fprintf(stderr, "installed db: %s\n", pool_errstr(pool));
 	  exit(1);
@@ -1779,12 +1768,13 @@ read_repos(Pool *pool, struct repoinfo *repoinfos, int nrepoinfos)
         fclose(ofp);
 #endif
 #if defined(ENABLE_DEBIAN) && defined(DEBIAN)
-      if (repo_add_debdb(repo, REPO_REUSE_REPODATA | REPO_USE_ROOTDIR))
+      if (repo_add_debdb(repo, REPO_REUSE_REPODATA | REPO_NO_INTERNALIZE | REPO_USE_ROOTDIR))
 	{
 	  fprintf(stderr, "installed db: %s\n", pool_errstr(pool));
 	  exit(1);
 	}
 #endif
+      repo_internalize(repo);
       writecachedrepo(repo, 0, 0, installedcookie);
     }
   pool_set_installed(pool, repo);
@@ -2319,6 +2309,8 @@ rewrite_repos(Pool *pool, Queue *addedfileprovides, Queue *addedfileprovides_ins
       if (repo->nrepodata < 2)
 	continue;
       cinfo = repo->appdata;
+      if (repo != pool->installed && !cinfo)
+	continue;
       if (cinfo && cinfo->incomplete)
 	continue;
       data = repo_id2repodata(repo, 1);
@@ -2380,6 +2372,17 @@ addfileprovides(Pool *pool)
   queue_free(&addedfileprovides_inst);
 }
 
+#endif
+
+#ifdef SUSE
+static void
+add_autopackages(Pool *pool)
+{
+  int i;
+  Repo *repo;
+  FOR_REPOS(i, repo)
+    repo_add_autopattern(repo, 0);
+}
 #endif
 
 #if defined(SUSE) || defined(FEDORA)
@@ -2447,6 +2450,7 @@ showdiskusagechanges(Transaction *trans)
   int i;
 
   /* XXX: use mountpoints here */
+  memset(duc, 0, sizeof(duc));
   duc[0].path = "/";
   duc[1].path = "/usr/share/man";
   duc[2].path = "/sbin";
@@ -2758,9 +2762,15 @@ main(int argc, char **argv)
   queue_init(&repofilter);
   queue_init(&kindfilter);
   queue_init(&archfilter);
-  while (argc > 2)
+  while (argc > 1)
     {
-      if (!strcmp(argv[1], "-r") || !strcmp(argv[1], "--repo"))
+      if (!strcmp(argv[1], "-i"))
+	{
+	  queue_push2(&repofilter, SOLVER_SOLVABLE_REPO | SOLVER_SETREPO, pool->installed->repoid);
+	  argc--;
+	  argv++;
+	}
+      else if (argc > 2 && (!strcmp(argv[1], "-r") || !strcmp(argv[1], "--repo")))
 	{
 	  const char *rname = argv[2], *rp;
 	  Id repoid = 0;
@@ -2800,7 +2810,7 @@ main(int argc, char **argv)
 	  argc -= 2;
 	  argv += 2;
 	}
-      else if (!strcmp(argv[1], "--arch"))
+      else if (argc > 2 && !strcmp(argv[1], "--arch"))
 	{
 	  if (!strcmp(argv[2], "src") || !strcmp(argv[2], "nosrc"))
 	    archfilter_src = 1;
@@ -2808,7 +2818,7 @@ main(int argc, char **argv)
 	  argc -= 2;
 	  argv += 2;
 	}
-      else if (!strcmp(argv[1], "-t") || !strcmp(argv[1], "--type"))
+      else if (argc > 2 && (!strcmp(argv[1], "-t") || !strcmp(argv[1], "--type")))
 	{
 	  const char *kind = argv[2];
 	  if (!strcmp(kind, "srcpackage"))
@@ -2918,6 +2928,9 @@ main(int argc, char **argv)
 #if defined(ENABLE_RPMDB)
   if (pool->disttype == DISTTYPE_RPM)
     addfileprovides(pool);
+#endif
+#ifdef SUSE
+  add_autopackages(pool);
 #endif
   pool_createwhatprovides(pool);
 

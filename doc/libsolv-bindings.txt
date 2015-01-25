@@ -138,7 +138,7 @@ Constants live in the namespace of the class they belong to:
 Note that boolean methods have an added trailing ``?'', to be consistent with
 other ruby modules:
 
-	puts "empty repo" if repo.isempty?
+	puts "empty" if repo.isempty?
 
 
 The Solv Class
@@ -201,8 +201,10 @@ Repositories, Dependencies, each indexed by Ids.
 	pool = solv.Pool()
 	pool = Solv::Pool.new()
 
-Create a new pool instance. In most cases you just need
-one pool.
+Create a new pool instance. In most cases you just need one pool.
+Note that the returned object "owns" the pool, i.e. if the object is 
+freed, the pool is also freed. You can use the disown method to
+break this ownership relation.
 
 === ATTRIBUTES ===
 
@@ -311,9 +313,18 @@ generates.
 	pool.free()
 	pool.free()
 
-Free a pool. This is currently done with a method instead of relying on
-reference counting or garbage collection because it's hard to track every
-reference to a pool.
+Force a free of the pool. After this call, you must not access any object
+that still references the pool.
+
+	void disown()
+	$pool->disown();
+	pool.disown()
+	pool.disown()
+
+Break the ownership relation betwen the binding object and the pool. After
+this call, the pool will not get freed even if the object goes out of
+scope. This also means that you must manually call the free method to free
+the pool data.
 
 	void setdebuglevel(int level)
 	$pool->setdebuglevel($level);
@@ -566,7 +577,12 @@ desired solvable by Id.
 Lookup functions. Return the data element stored in the specified solvable.
 You should probably use the methods of the Solvable class instead.
 
-	Dataiterator Dataiterator(Id solvid, Id keyname, const char *match, int flags)
+	Dataiterator Dataiterator(Id keyname, const char *match = 0, int flags = 0)
+	my $di = $pool->Dataiterator($keyname, $match, $flags);
+	di = pool.Dataiterator(keyname, match, flags)
+	di = pool.Dataiterator(keyname, match, flags)
+
+	Dataiterator Dataiterator_solvid(Id solvid, Id keyname, const char *match = 0, int flags = 0)
 	my $di = $pool->Dataiterator($solvid, $keyname, $match, $flags);
 	di = pool.Dataiterator(solvid, keyname, match, flags)
 	di = pool.Dataiterator(solvid, keyname, match, flags)
@@ -576,7 +592,8 @@ You should probably use the methods of the Solvable class instead.
 	for d in di
 
 Iterate over the matching data elements. See the Dataiterator class for more
-information.
+information. The Dataiterator method iterates over all solvables in the pool,
+whereas the Dataiterator_solvid only iterates over the specified solvable.
 
 === ID METHODS ===
 
@@ -935,17 +952,24 @@ areas.
 
 Create a Selection consisting of all packages in the repository.
 
-	Dataiterator Dataiterator(Id p, Id key, const char *match, int flags)
-	my $di = $repo->Dataiterator($solvid, $keyname, $match, $flags);
-	di = repo.Dataiterator(solvid, keyname, match, flags)
-	di = repo.Dataiterator(solvid, keyname, match, flags)
+	Dataiterator Dataiterator(Id key, const char *match = 0, int flags = 0)
+	my $di = $repo->Dataiterator($keyname, $match, $flags);
+	di = repo.Dataiterator(keyname, match, flags)
+	di = repo.Dataiterator(keyname, match, flags)
+
+	Dataiterator Dataiterator_meta(Id key, const char *match = 0, int flags = 0)
+	my $di = $repo->Dataiterator_meta($keyname, $match, $flags);
+	di = repo.Dataiterator_meta(keyname, match, flags)
+	di = repo.Dataiterator_meta(keyname, match, flags)
 
 	for my $d (@$di)
 	for d in di:
 	for d in di
 
 Iterate over the matching data elements in this repository. See the
-Dataiterator class for more information.
+Dataiterator class for more information. The Dataiterator() method
+iterates over all solvables in a repository, whereas the Dataiterator_meta
+method only iterates over the repository's meta data.
 
 	<stringification>
 	my $str = $repo->str;
@@ -1277,6 +1301,18 @@ Return a tuple containing the on-media location and an optional
 media number for multi-part repositories (e.g. repositories
 spawning multiple DVDs).
 
+	Dataiterator Dataiterator(Id keyname, const char *match = 0, int flags = 0)
+	my $di = $solvable->Dataiterator($keyname, $match, $flags);
+	di = solvable.Dataiterator(keyname, match, flags)
+	di = solvable.Dataiterator(keyname, match, flags)
+
+	for my $d (@$di)
+	for d in di:
+	for d in di
+
+Iterate over the matching data elements. See the Dataiterator class for more
+information.
+
 	void add_deparray(Id keyname, DepId dep, Id marker = -1);
 	$solvable->add_deparray($keyname, $dep);
 	solvable.add_deparray(keyname, dep)
@@ -1305,6 +1341,22 @@ are not installable if the system does not support their architecture.
 	solvable.isinstalled?
 
 Return true if the solvable is installed on the system.
+
+	bool identical(Solvable *other)
+	$solvable->identical($other)
+	$solvable.identical(other)
+	$solvable.identical?(other)
+
+Return true if the two solvables are identical.
+
+	int evrcmp(Solvable *other)
+	$solvable->evrcmp(other)
+	$solvable.evrcmp(other)
+	$solvable.evrcmp(other)
+
+Returns -1 if the epoch/version/release of the solvable is less then the
+one from the other solvable, 1 if it is greater, and 0 if they are equal.
+Note that "equal" does not mean that the evr is identical.
 
 	Selection Selection(int setflags = 0)
 	my $sel = $solvable->Selection();
@@ -1438,66 +1490,74 @@ The solvable containing the value that was matched.
 
 The id of the solvable that matched.
 
-=== METHODS ===
+	Id key_id;
+	$d->{key_id}
+	d.key_id
+	d.key_id
 
-	Id key_id();
-	$d->key_id()
-	d.key_id()
-	d.key_id()
-
-	const char *key_idstr();
-	$d->key_idstr()
-	d.key_idstr()
-	d.key_idstr()
+	const char *key_idstr;
+	$d->{key_idstr}
+	d.key_idstr
+	d.key_idstr
 
 The keyname that matched, either as id or string.
 
-	Id type_id();
-	$d->type_id()
-	d.type_id()
-	d.type_id()
+	Id type_id;
+	$d->{type_id}
+	d.type_id
+	d.type_id
 
-	const char *type_idstr();
-	$d->type_idstr();
-	d.type_idstr()
-	d.type_idstr()
+	const char *type_idstr;
+	$d->{type_idstr};
+	d.type_idstr
+	d.type_idstr
 
 The key type of the value that was matched, either as id or string.
 
-	Id id();
-	$d->id()
-	d.id()
-	d.id()
+	Id id;
+	$d->{id}
+	d.id
+	d.id
 
-	Id idstr();
-	$d->idstr()
-	d.idstr()
-	d.idstr()
+	Id idstr;
+	$d->{idstr}
+	d.idstr
+	d.idstr
 
 The Id of the value that was matched (only valid for id types),
 either as id or string.
 
-	const char *str();
-	$d->str()
-	d.str()
-	d.str()
+	const char *str;
+	$d->{str}
+	d.str
+	d.str
 
 The string value that was matched (only valid for string types).
 
-	unsigned long long num();
-	$d->num()
-	d.num()
-	d.num()
+	unsigned long long num;
+	$d->{num}
+	d.num
+	d.num
 
 The numeric value that was matched (only valid for numeric types).
 
-	unsigned int num2();
-	$d->num2()
-	d.num2()
-	d.num2()
+	unsigned int num2;
+	$d->{num2}
+	d.num2
+	d.num2
 
 The secondary numeric value that was matched (only valid for types
 containing two values).
+
+	unsigned int binary;
+	$d->{binary}
+	d.binary
+	d.binary
+
+The value in binary form, useful for checksums and other data
+that cannot be represented as a string.
+
+=== METHODS ===
 
 	Datapos pos();
 	my $pos = $d->pos();
@@ -1736,10 +1796,11 @@ repositories except orphaned packages. Orphaned packages are packages that
 have no relation to the packages in the repositories, i.e. no package in the
 repositories have the same name or obsolete the orphaned package.
 This action brings the installed packages in sync with the ones in the
-repository. It also turns of arch/vendor/version locking for the affected
-packages to simulate a fresh installation. This means that distupgrade can
+repository. By default it also turns of arch/vendor/version locking for the
+affected packages to simulate a fresh installation. This means that distupgrade can
 actually downgrade packages if only lower versions of a package are available
-in the repositories.
+in the repositories. You can tweak this behavior with the SOLVER_FLAG_DUP_
+solver flags.
 
 *SOLVER_DROP_ORPHANED*::
 Erase all the matching installed packages if they are orphaned. This only makes
@@ -1967,6 +2028,18 @@ flag if you only have SOLVER_ERASE jobs, as in that case it's
 better for the user to check the transaction overview instead of
 approving every single package that needs to be erased.
 
+*SOLVER_FLAG_DUP_ALLOW_DOWNGRADE*::
+Like SOLVER_FLAG_ALLOW_DOWNGRADE, but used in distupgrade mode.
+
+*SOLVER_FLAG_DUP_ALLOW_ARCHCHANGE*::
+Like SOLVER_FLAG_ALLOW_ARCHCHANGE, but used in distupgrade mode.
+
+*SOLVER_FLAG_DUP_ALLOW_VENDORCHANGE*::
+Like SOLVER_FLAG_ALLOW_VENDORCHANGE, but used in distupgrade mode.
+
+*SOLVER_FLAG_DUP_ALLOW_NAMECHANGE*::
+Like SOLVER_FLAG_ALLOW_NAMECHANGE, but used in distupgrade mode.
+
 *SOLVER_FLAG_NO_UPDATEPROVIDE*::
 If multiple packages obsolete an installed package, the solver checks
 the provides of every such package and ignores all packages that
@@ -2008,13 +2081,28 @@ installed packages, which may conflict with the set policy.
 Do not enable auto-targeting up update and distupgrade jobs. See
 the section on targeted updates for more information.
 
+*SOLVER_FLAG_KEEP_ORPHANS*::
+Do not allow orphaned packages to be deinstalled if they get
+in the way of resolving other packages.
+
+*SOLVER_FLAG_BREAK_ORPHANS*::
+Ignore dependencies of orphaned packages that get in the way
+of resolving non-orphaned ones. Setting the flag might result
+in no longer working packages in case they are orphaned.
+
+*SOLVER_FLAG_FOCUS_INSTALLED*::
+Resolve installed packages before resolving the given job.
+Setting this flag means that the solver will prefer picking
+a package version that fits the other installed packages
+over updating installed packages.
+
 Basic rule types:
 
 *SOLVER_RULE_UNKNOWN*::
 A rule of an unknown class. You should never encounter those.
 
-*SOLVER_RULE_RPM*::
-A package dependency rule, called rpm rule for historical reasons.
+*SOLVER_RULE_PKG*::
+A package dependency rule.
 
 *SOLVER_RULE_UPDATE*::
 A rule to implement the update policy of installed packages. Every
@@ -2054,43 +2142,43 @@ implementations.
 
 Special dependency rule types:
 
-*SOLVER_RULE_RPM_NOT_INSTALLABLE*::
+*SOLVER_RULE_PKG_NOT_INSTALLABLE*::
 This rule was added to prevent the installation of a package of an
 architecture that does not work on the system.
 
-*SOLVER_RULE_RPM_NOTHING_PROVIDES_DEP*::
+*SOLVER_RULE_PKG_NOTHING_PROVIDES_DEP*::
 The package contains a required dependency which was not provided by
 any package.
 
-*SOLVER_RULE_RPM_PACKAGE_REQUIRES*::
-Similar to SOLVER_RULE_RPM_NOTHING_PROVIDES_DEP, but in this case
+*SOLVER_RULE_PKG_REQUIRES*::
+Similar to SOLVER_RULE_PKG_NOTHING_PROVIDES_DEP, but in this case
 some packages provided the dependency but none of them could be
 installed due to other dependency issues.
 
-*SOLVER_RULE_RPM_SELF_CONFLICT*::
+*SOLVER_RULE_PKG_SELF_CONFLICT*::
 The package conflicts with itself. This is not allowed by older rpm
 versions.
 
-*SOLVER_RULE_RPM_PACKAGE_CONFLICT*::
+*SOLVER_RULE_PKG_CONFLICTS*::
 To fulfill the dependencies two packages need to be installed, but
 one of the packages contains a conflict with the other one.
 
-*SOLVER_RULE_RPM_SAME_NAME*::
+*SOLVER_RULE_PKG_SAME_NAME*::
 The dependencies can only be fulfilled by multiple versions of
 a package, but installing multiple versions of the same package
 is not allowed.
 
-*SOLVER_RULE_RPM_PACKAGE_OBSOLETES*::
+*SOLVER_RULE_PKG_OBSOLETES*::
 To fulfill the dependencies two packages need to be installed, but
 one of the packages obsoletes the other one.
 
-*SOLVER_RULE_RPM_IMPLICIT_OBSOLETES*::
+*SOLVER_RULE_PKG_IMPLICIT_OBSOLETES*::
 To fulfill the dependencies two packages need to be installed, but
 one of the packages has provides a dependency that is obsoleted
 by the other one. See the POOL_FLAG_IMPLICITOBSOLETEUSESPROVIDES
 flag.
 
-*SOLVER_RULE_RPM_INSTALLEDPKG_OBSOLETES*::
+*SOLVER_RULE_PKG_INSTALLED_OBSOLETES*::
 To fulfill the dependencies a package needs to be installed that is
 obsoleted by an installed package. See the POOL_FLAG_NOINSTALLEDOBSOLETES
 flag.
@@ -2174,6 +2262,47 @@ The problem can be solved by allowing to replace the package with some
 other package that has a different name.
 
 
+Reason constants
+
+*SOLVER_REASON_UNRELATED*::
+The package status did not change as it was not related to any job.
+
+*SOLVER_REASON_UNIT_RULE*::
+The package was installed/erased/kept because of a unit rule, i.e. a rule
+where all literals but one were false.
+
+*SOLVER_REASON_KEEP_INSTALLED*::
+The package was chosen when trying to keep as many packages installed as
+possible.
+
+*SOLVER_REASON_RESOLVE_JOB*::
+The decision happened to fulfill a job rule.
+
+*SOLVER_REASON_UPDATE_INSTALLED*::
+The decision happened to fulfill a package update request.
+
+*SOLVER_REASON_CLEANDEPS_ERASE*::
+The package was erased when cleaning up dependencies from other erased
+packages.
+
+*SOLVER_REASON_RESOLVE*::
+The package was installed to fulfill package dependencies.
+
+*SOLVER_REASON_WEAKDEP*::
+The package was installed because of a weak dependency (Recommends or
+Supplements).
+
+*SOLVER_REASON_RESOLVE_ORPHAN*::
+The decision about the package was made when deciding the fate of orphaned
+packages.
+
+*SOLVER_REASON_RECOMMENDED*::
+This is a special case of SOLVER_REASON_WEAKDEP.
+
+*SOLVER_REASON_SUPPLEMENTED*::
+This is a special case of SOLVER_REASON_WEAKDEP.
+
+
 === ATTRIBUTES ===
 
 	Pool *pool;				/* read only */
@@ -2186,14 +2315,14 @@ Back pointer to pool.
 === METHODS ===
 
 	int set_flag(int flag, int value)
-	my $oldvalue = $pool->set_flag($flag, $value);
-	oldvalue = pool.set_flag(flag, value)
-	oldvalue = pool.set_flag(flag, value)
+	my $oldvalue = $solver->set_flag($flag, $value);
+	oldvalue = solver.set_flag(flag, value)
+	oldvalue = solver.set_flag(flag, value)
 
 	int get_flag(int flag)
-	my $value = $pool->get_flag($flag);
-	value = pool.get_flag(flag)
-	value = pool.get_flag(flag)
+	my $value = $solver->get_flag($flag);
+	value = solver.get_flag(flag)
+	value = solver.get_flag(flag)
 
 Set/get a solver specific flag. The flags define the policies the solver has
 to obey. The flags are explained in the CONSTANTS section of this class.
@@ -2216,6 +2345,14 @@ problems.
 Return the transaction to implement the calculated package changes. A transaction
 is available even if problems were found, this is useful for interactive user
 interfaces that show both the job result and the problems.
+
+	int reason = describe_decision(Solvable *s, Rule *OUTPUT)
+	my ($reason, $rule) = $solver->describe_decision($solvable);
+	(reason, rule) = solver.describe_decision(solvable)
+	(reason, rule) = solver.describe_decision(solvable)
+
+Return the reason why a specific solvable was installed or erased. For most of
+the reasons the rule that triggered the decision is also returned.
 
 The Problem Class
 -----------------
@@ -2949,6 +3086,13 @@ result can contain NUL bytes or unprintable characters.
 
 Finalize the checksum and return the result as hex string.
 
+	const char *typestr()
+	my $typestr = $chksum->typestr();
+	typestr = chksum.typestr
+	typestr = chksum.typestr
+
+Return the type of the checksum as a string, e.g. "sha256".
+
 	<equality>
 	if ($chksum1 == $chksum2)
 	if chksum1 == chksum2:
@@ -3247,6 +3391,18 @@ Return the delta rpm sequence from the structure describing a delta rpm.
 
 Lookup functions. Note that the returned Ids are always translated into
 the Ids of the global pool even if the repodata area contains its own pool.
+
+	Dataiterator Dataiterator(Id keyname, const char *match = 0, int flags = 0)
+	my $di = $datapos->Dataiterator($keyname, $match, $flags);
+	di = datapos.Dataiterator(keyname, match, flags)
+	di = datapos.Dataiterator(keyname, match, flags)
+
+	for my $d (@$di)
+	for d in di:
+	for d in di
+
+Iterate over the matching data elements. See the Dataiterator class for more
+information.
 
 Author
 ------

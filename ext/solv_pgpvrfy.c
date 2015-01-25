@@ -70,6 +70,8 @@ mpdomod(int len, mp_t *target, mp2_t x, mp_t *mod)
       /* reduce */
       mp2_t z = x / ((mp2_t)mod[i] + 1);
       mp2_t n = 0;
+      if ((z >> MP_T_BITS) != 0)
+	z = (mp2_t)1 << MP_T_BITS;	/* just in case... */
       for (j = 0; j < i; j++)
 	{
 	  mp_t n2;
@@ -415,9 +417,17 @@ solv_pgpvrfy(const unsigned char *pub, int publ, const unsigned char *sig, int s
       hashl = 32;	/* SHA-256 */
       oid = (unsigned char *)"\023\060\061\060\015\006\011\140\206\110\001\145\003\004\002\001\005\000\004\040";
       break;
+    case 9:
+      hashl = 48;	/* SHA-384 */
+      oid = (unsigned char *)"\023\060\101\060\015\006\011\140\206\110\001\145\003\004\002\002\005\000\004\060";
+      break;
     case 10:
       hashl = 64;	/* SHA-512 */
       oid = (unsigned char *)"\023\060\121\060\015\006\011\140\206\110\001\145\003\004\002\003\005\000\004\100";
+      break;
+    case 11:
+      hashl = 28;	/* SHA-224 */
+      oid = (unsigned char *)"\023\060\061\060\015\006\011\140\206\110\001\145\003\004\002\004\005\000\004\034";
       break;
     default:
       return 0;		/* unsupported hash algo */
