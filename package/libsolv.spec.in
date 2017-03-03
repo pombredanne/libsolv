@@ -26,6 +26,7 @@ BuildRoot:      %{_tmppath}/%{name}-%{version}-build
 %bcond_without disable_shared
 %bcond_without perl_binding
 %bcond_without python_binding
+%bcond_without python3_binding
 %bcond_without ruby_binding
 %bcond_with zypp
 
@@ -34,22 +35,14 @@ BuildRoot:      %{_tmppath}/%{name}-%{version}-build
 BuildRequires:  libneon0.26-devel
 %endif
 %if 0%{?fedora_version} || 0%{?rhel_version} >= 600 || 0%{?centos_version} >= 600
-BuildRequires:  db4-devel
+BuildRequires:  db-devel
 %endif
-%if 0%{?suse_version}
-%if 0%{?suse_version} < 1030
-BuildRequires:  expat
-%else
-BuildRequires:  libexpat-devel
-%endif
-%if 0%{?suse_version} < 1100
+BuildRequires:  libxml2-devel
+%if 0%{?suse_version} && 0%{?suse_version} < 1100
 BuildRequires:  graphviz
 %endif
 %if 0%{?suse_version} > 1020
 BuildRequires:  fdupes
-%endif
-%else
-BuildRequires:  expat-devel
 %endif
 BuildRequires:  cmake
 BuildRequires:  gcc-c++
@@ -64,15 +57,19 @@ BuildRequires:  perl-devel
 BuildRequires:  swig
 %endif
 %if %{with ruby_binding}
-%global ruby_vendorarch %(ruby  -r rbconfig -e "puts Config::CONFIG['vendorarchdir'].nil? ? Config::CONFIG['sitearchdir'] : Config::CONFIG['vendorarchdir']")
+%global ruby_vendorarch %(ruby  -r rbconfig -e "puts RbConfig::CONFIG['vendorarchdir'].nil? ? RbConfig::CONFIG['sitearchdir'] : RbConfig::CONFIG['vendorarchdir']")
 BuildRequires:  ruby
 BuildRequires:  ruby-devel
 BuildRequires:  swig
 %endif
 %if %{with python_binding}
-%global python_sitearch %(python -c "from distutils.sysconfig import get_python_lib; print get_python_lib(True);")
+%global python_sitearch %(python -c "from distutils.sysconfig import get_python_lib; print(get_python_lib(True))")
 BuildRequires:  python-devel
 BuildRequires:  swig
+%endif
+%if %{with python3_binding}
+%global python3_sitearch %(python3 -c "from distutils.sysconfig import get_python_lib; print(get_python_lib(True))")
+BuildRequires:  python3-devel
 %endif
 
 Summary:        A new approach to package dependency solving
@@ -146,6 +143,13 @@ Group:          Development/Languages/Python
 %description -n python-solv
 Python bindings for sat solver.
 
+%package -n python3-solv
+Summary:        Python3 bindings for the libsolv library
+Group:          Development/Languages/Python
+
+%description -n python3-solv
+Python3 bindings for sat solver.
+
 %package -n perl-solv
 Requires:       perl = %{perl_version}
 Summary:        Perl bindings for the libsolv library
@@ -166,18 +170,20 @@ CMAKE_FLAGS=
 CMAKE_FLAGS="-DFEDORA=1"
 %endif
 %if 0%{?suse_version}
-CMAKE_FLAGS="-DSUSE=1 -DENABLE_APPDATA=1"
+CMAKE_FLAGS="-DSUSE=1 -DENABLE_APPDATA=1 -DENABLE_COMPS=1"
 %endif
 
-cmake   $CMAKE_FLAGS \
+cmake	$CMAKE_FLAGS \
 	-DCMAKE_INSTALL_PREFIX=%{_prefix} \
 	-DLIB=%{_lib} \
 	-DCMAKE_VERBOSE_MAKEFILE=TRUE \
 	-DCMAKE_BUILD_TYPE=RelWithDebInfo \
+	-DWITH_LIBXML2=1 \
 	%{?with_enable_static:-DENABLE_STATIC=1} \
 	%{?with_disable_shared:-DDISABLE_SHARED=1} \
 	%{?with_perl_binding:-DENABLE_PERL=1} \
 	%{?with_python_binding:-DENABLE_PYTHON=1} \
+	%{?with_python3_binding:-DENABLE_PYTHON3=1} \
 	%{?with_ruby_binding:-DENABLE_RUBY=1} \
 	%{?with_zypp:-DENABLE_SUSEREPO=1 -DENABLE_HELIXREPO=1} \
 	-DUSE_VENDORDIRS=1 \
@@ -186,12 +192,15 @@ make %{?jobs:-j %jobs}
 
 %install
 make DESTDIR=$RPM_BUILD_ROOT install
-%if %{with python_binding}
 %if 0%{?suse_version}
+%if %{with python_binding}
 pushd $RPM_BUILD_ROOT/%{python_sitearch}
 python %py_libdir/py_compile.py *.py
 python -O %py_libdir/py_compile.py *.py
 popd
+%endif
+%if %{with python3_binding}
+%py3_compile $RPM_BUILD_ROOT/%{python3_sitearch}
 %endif
 %endif
 %if %{with disable_shared}
@@ -240,6 +249,7 @@ rm -rf "$RPM_BUILD_ROOT"
 %{_mandir}/man1/helix2solv*
 %endif
 %{_datadir}/cmake/Modules/*
+%{_libdir}/pkgconfig/libsolv*.pc
 %{_mandir}/man3/*
 
 %files demo
@@ -262,6 +272,15 @@ rm -rf "$RPM_BUILD_ROOT"
 %files -n python-solv
 %defattr(-,root,root)
 %{python_sitearch}/*
+%endif
+
+%if %{with python3_binding}
+%files -n python3-solv
+%defattr(-,root,root)
+%{python3_sitearch}/*solv*
+%if 0%{?suse_version}
+%{python3_sitearch}/*/*solv*
+%endif
 %endif
 
 %changelog

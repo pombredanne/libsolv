@@ -17,6 +17,7 @@
 #include "pool.h"
 #include "repo.h"
 #include "util.h"
+#include "solver.h"	/* for GET_USERINSTALLED_ flags */
 #include "chksum.h"
 #include "repo_deb.h"
 
@@ -204,7 +205,7 @@ control2solvable(Solvable *s, Repodata *data, char *control)
       if (*p)
         *p++ = 0;
       /* strip trailing space */
-      while (end >= control && *end == ' ' && *end == '\t')
+      while (end >= control && (*end == ' ' || *end == '\t'))
 	*end-- = 0;
       tag = control;
       control = p;
@@ -313,6 +314,10 @@ control2solvable(Solvable *s, Repodata *data, char *control)
 	      havesource = 1;
 	    }
 	  break;
+	case 'S' << 8 | 'T':
+	  if (!strcasecmp(tag, "status"))
+	    repodata_set_poolstr(data, s - pool->solvables, SOLVABLE_INSTALLSTATUS, q);
+	  break;
 	case 'S' << 8 | 'U':
 	  if (!strcasecmp(tag, "suggests"))
 	    s->suggests = makedeps(repo, q, s->suggests, 0);
@@ -383,12 +388,10 @@ repo_add_debpackages(Repo *repo, FILE *fp, int flags)
       if (!(p = strchr(p, '\n')))
 	{
 	  int l3;
-	  if (l + 1024 >= bufl)
+	  while (l + 1024 >= bufl)
 	    {
 	      buf = solv_realloc(buf, bufl + 4096);
 	      bufl += 4096;
-	      p = buf + l;
-	      continue;
 	    }
 	  p = buf + l;
 	  ll = fread(p, 1, bufl - l - 1, fp);
@@ -398,6 +401,8 @@ repo_add_debpackages(Repo *repo, FILE *fp, int flags)
 	  while ((l3 = strlen(p)) < ll)
 	    p[l3] = '\n';
 	  l += ll;
+	  if (p != buf)
+	    p--;
 	  continue;
 	}
       p++;
@@ -470,7 +475,7 @@ repo_add_deb(Repo *repo, const char *deb, int flags)
       return 0;
     }
   l = fread(buf, 1, sizeof(buf), fp);
-  if (l < 8 + 60 || strncmp((char *)buf, "!<arch>\ndebian-binary   ", 8 + 16) != 0)
+  if (l < 8 + 60 || (strncmp((char *)buf, "!<arch>\ndebian-binary   ", 8 + 16) != 0 && strncmp((char *)buf, "!<arch>\ndebian-binary/  ", 8 + 16) != 0))
     {
       pool_error(pool, -1, "%s: not a deb package", deb);
       fclose(fp);
@@ -490,7 +495,7 @@ repo_add_deb(Repo *repo, const char *deb, int flags)
       fclose(fp);
       return 0;
     }
-  if (strncmp((char *)buf + 8 + 60 + vlen, "control.tar.gz  ", 16) != 0)
+  if (strncmp((char *)buf + 8 + 60 + vlen, "control.tar.gz  ", 16) != 0 && strncmp((char *)buf + 8 + 60 + vlen, "control.tar.gz/ ", 16) != 0)
     {
       pool_error(pool, -1, "%s: control.tar.gz is not second entry", deb);
       fclose(fp);
@@ -613,3 +618,94 @@ repo_add_deb(Repo *repo, const char *deb, int flags)
     repodata_internalize(data);
   return s - pool->solvables;
 }
+
+void
+pool_deb_get_autoinstalled(Pool *pool, FILE *fp, Queue *q, int flags)
+{
+  Id name = 0, arch = 0;
+  int autoinstalled = -1;
+  char *buf, *bp;
+  int x, l, bufl, eof = 0;
+  Id p, pp;
+
+  queue_empty(q);
+  buf = solv_malloc(4096);
+  bufl = 4096;
+  l = 0;
+  while (!eof)
+    {
+      while (bufl - l < 1024)
+	{
+	  bufl += 4096;
+	  if (bufl > 1024 * 64)
+	    break;	/* hmm? */
+	  buf = solv_realloc(buf, bufl);
+	}
+      if (!fgets(buf + l, bufl - l, fp))
+	{
+	  eof = 1;
+	  buf[l] = '\n';
+	  buf[l + 1] = 0;
+	}
+      l = strlen(buf);
+      if (l && buf[l - 1] == '\n')
+	buf[--l] = 0;
+      if (!*buf || eof)
+	{
+	  l = 0;
+	  if (name && autoinstalled > 0)
+	    {
+	      if ((flags & GET_USERINSTALLED_NAMEARCH) != 0)
+		queue_push2(q, name, arch);
+	      else if ((flags & GET_USERINSTALLED_NAMES) != 0)
+		queue_push(q, name);
+	      else
+		{
+		  FOR_PROVIDES(p, pp, name)
+		    {
+		      Solvable *s = pool->solvables + p;
+		      if (s->name != name)
+			continue;
+		      if (arch && s->arch != arch)
+			continue;
+		      queue_push(q, p);
+		    }
+		}
+	    }
+	  name = arch = 0;
+	  autoinstalled = -1;
+	  continue;
+	}
+      /* strip trailing space */
+      while (l && (buf[l - 1] == ' ' || buf[l - 1] == '\t'))
+	buf[--l] = 0;
+      l = 0;
+
+      bp = strchr(buf, ':');
+      if (!bp || bp - buf < 4)
+	continue;
+      *bp++ = 0;
+      while (*bp == ' ' || *bp == '\t')
+	bp++;
+      x = '@' + (buf[0] & 0x1f);
+      x = (x << 8) + '@' + (buf[1] & 0x1f);
+      switch(x)
+	{
+	case 'P' << 8 | 'A':
+	  if (!strcasecmp(buf, "package"))
+	    name = pool_str2id(pool, bp, 1);
+	  break;
+	case 'A' << 8 | 'R':
+	  if (!strcasecmp(buf, "architecture"))
+	    arch = pool_str2id(pool, bp, 1);
+	  break;
+	case 'A' << 8 | 'U':
+	  if (!strcasecmp(buf, "auto-installed"))
+	    autoinstalled = atoi(bp);
+	  break;
+	default:
+	  break;
+	}
+    }
+}
+

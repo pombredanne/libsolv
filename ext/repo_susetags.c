@@ -6,8 +6,6 @@
  */
 
 #include <sys/types.h>
-#include <limits.h>
-#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -21,6 +19,7 @@
 #ifdef ENABLE_COMPLEX_DEPS
 #include "pool_parserpmrichdep.h"
 #endif
+#include "repodata_diskusage.h"
 
 struct datashare {
   Id name;
@@ -38,8 +37,7 @@ struct parsedata {
   int last_found_source;
   struct datashare *share_with;
   int nshare;
-  Id (*dirs)[3];			/* dirid, size, nfiles */
-  int ndirs;
+  Queue diskusageq;
   struct joindata jd;
   char *language;			/* the default language */
   Id langcache[ID_NUM_INTERNAL];	/* cache for the default language */
@@ -180,39 +178,6 @@ add_source(struct parsedata *pd, char *line, Solvable *s, Id handle)
   repodata_set_constantid(pd->data, handle, SOLVABLE_SOURCEARCH, arch);
 }
 
-/*
- * add_dirline
- * add a line with directory information
- *
- */
-
-static void
-add_dirline(struct parsedata *pd, char *line)
-{
-  char *sp[6];
-  long filesz;
-  long filenum;
-  Id dirid;
-  if (split(line, sp, 6) != 5)
-    return;
-  pd->dirs = solv_extend(pd->dirs, pd->ndirs, 1, sizeof(pd->dirs[0]), 31);
-  filesz = strtol(sp[1], 0, 0);
-  filesz += strtol(sp[2], 0, 0);
-  filenum = strtol(sp[3], 0, 0);
-  filenum += strtol(sp[4], 0, 0);
-  /* hack: we know that there's room for a / */
-  if (*sp[0] != '/')
-    *--sp[0] = '/';
-  dirid = repodata_str2dir(pd->data, sp[0], 1);
-#if 0
-fprintf(stderr, "%s -> %d\n", sp[0], dirid);
-#endif
-  pd->dirs[pd->ndirs][0] = dirid;
-  pd->dirs[pd->ndirs][1] = filesz;
-  pd->dirs[pd->ndirs][2] = filenum;
-  pd->ndirs++;
-}
-
 static void
 set_checksum(struct parsedata *pd, Repodata *data, Id handle, Id keyname, char *line)
 {
@@ -238,86 +203,6 @@ set_checksum(struct parsedata *pd, Repodata *data, Id handle, Id keyname, char *
 }
 
 
-/*
- * id3_cmp
- * compare
- *
- */
-
-static int
-id3_cmp(const void *v1, const void *v2, void *dp)
-{
-  Id *i1 = (Id*)v1;
-  Id *i2 = (Id*)v2;
-  return i1[0] - i2[0];
-}
-
-
-/*
- * commit_diskusage
- *
- */
-
-static void
-commit_diskusage(struct parsedata *pd, Id handle)
-{
-  int i;
-  Dirpool *dp = &pd->data->dirpool;
-  /* Now sort in dirid order.  This ensures that parents come before
-     their children.  */
-  if (pd->ndirs > 1)
-    solv_sort(pd->dirs, pd->ndirs, sizeof(pd->dirs[0]), id3_cmp, 0);
-  /* Substract leaf numbers from all parents to make the numbers
-     non-cumulative.  This must be done post-order (i.e. all leafs
-     adjusted before parents).  We ensure this by starting at the end of
-     the array moving to the start, hence seeing leafs before parents.  */
-  for (i = pd->ndirs; i--;)
-    {
-      Id p = dirpool_parent(dp, pd->dirs[i][0]);
-      int j = i;
-      for (; p; p = dirpool_parent(dp, p))
-        {
-          for (; j--;)
-	    if (pd->dirs[j][0] == p)
-	      break;
-	  if (j >= 0)
-	    {
-	      if (pd->dirs[j][1] < pd->dirs[i][1])
-	        pd->dirs[j][1] = 0;
-	      else
-	        pd->dirs[j][1] -= pd->dirs[i][1];
-	      if (pd->dirs[j][2] < pd->dirs[i][2])
-	        pd->dirs[j][2] = 0;
-	      else
-	        pd->dirs[j][2] -= pd->dirs[i][2];
-	    }
-	  else
-	    /* Haven't found this parent in the list, look further if
-	       we maybe find the parents parent.  */
-	    j = i;
-	}
-    }
-#if 0
-  char sbuf[1024];
-  char *buf = sbuf;
-  unsigned slen = sizeof(sbuf);
-  for (i = 0; i < pd->ndirs; i++)
-    {
-      dir2str(attr, pd->dirs[i][0], &buf, &slen);
-      fprintf(stderr, "have dir %d %d %d %s\n", pd->dirs[i][0], pd->dirs[i][1], pd->dirs[i][2], buf);
-    }
-  if (buf != sbuf)
-    free (buf);
-#endif
-  for (i = 0; i < pd->ndirs; i++)
-    if (pd->dirs[i][1] || pd->dirs[i][2])
-      {
-	repodata_add_dirnumnum(pd->data, handle, SOLVABLE_DISKUSAGE, pd->dirs[i][0], pd->dirs[i][1], pd->dirs[i][2]);
-      }
-  pd->ndirs = 0;
-}
-
-
 /* Unfortunately "a"[0] is no constant expression in the C languages,
    so we need to pass the four characters individually :-/  */
 #define CTAG(a,b,c,d) ((unsigned)(((unsigned char)a) << 24) \
@@ -330,7 +215,7 @@ commit_diskusage(struct parsedata *pd, Id handle)
  *
  */
 
-static inline unsigned
+static inline unsigned int
 tag_from_string(char *cs)
 {
   unsigned char *s = (unsigned char *)cs;
@@ -385,17 +270,13 @@ finish_solvable(struct parsedata *pd, Solvable *s, Offset freshens)
 	}
       pd->nfilelist = 0;
     }
-  /* A self provide, except for source packages.  This is harmless
+  /* Add self provide, except for source packages.  This is harmless
      to do twice (in case we see the same package twice).  */
   if (s->name && s->arch != ARCH_SRC && s->arch != ARCH_NOSRC)
-    s->provides = repo_addid_dep(pd->repo, s->provides,
-		pool_rel2id(pool, s->name, s->evr, REL_EQ, 1), 0);
-  /* XXX This uses repo_addid_dep internally, so should also be
-     harmless to do twice.  */
-  s->supplements = repo_fix_supplements(pd->repo, s->provides, s->supplements, freshens);
-  s->conflicts = repo_fix_conflicts(pd->repo, s->conflicts);
-  if (pd->ndirs)
-    commit_diskusage(pd, handle);
+    s->provides = repo_addid_dep(pd->repo, s->provides, pool_rel2id(pool, s->name, s->evr, REL_EQ, 1), 0);
+  repo_rewrite_suse_deps(s, freshens);
+  if (pd->diskusageq.count)
+    repodata_add_diskusage(pd->data, handle, &pd->diskusageq);
 }
 
 static Hashtable
@@ -482,12 +363,13 @@ repo_add_susetags(Repo *repo, FILE *fp, Id defvendor, const char *language, int 
   Solvable *s;
   Offset freshens;
   int intag = 0;
+  int intag_linestart = 0;
   int cummulate = 0;
   int indesc = 0;
   int indelta = 0;
   int last_found_pack = 0;
   Id first_new_pkg = 0;
-  char *sp[5];
+  char *sp[6];
   struct parsedata pd;
   Repodata *data = 0;
   Id handle = 0;
@@ -512,6 +394,7 @@ repo_add_susetags(Repo *repo, FILE *fp, Id defvendor, const char *language, int 
   pd.data = data;
   pd.flags = flags;
   pd.language = language && *language ? solv_strdup(language) : 0;
+  queue_init(&pd.diskusageq);
 
   linep = line;
   s = 0;
@@ -562,10 +445,9 @@ repo_add_susetags(Repo *repo, FILE *fp, Id defvendor, const char *language, int 
 
   for (;;)
     {
-      unsigned tag;
-      char *olinep; /* old line pointer */
+      unsigned int tag;
       char line_lang[6];
-      int keylen = 3;
+      int keylen;
 
       if (pd.ret)
 	break;
@@ -578,84 +460,86 @@ repo_add_susetags(Repo *repo, FILE *fp, Id defvendor, const char *language, int 
 	}
       if (!fgets(linep, aline - (linep - line), fp)) /* read line */
 	break;
-      olinep = linep;
       linep += strlen(linep);
       if (linep == line || linep[-1] != '\n')
         continue;
       pd.lineno++;
       *--linep = 0;
-      if (linep == olinep)
-	continue;
 
       if (intag)
 	{
-	  /* check for multi-line value tags (+Key:/-Key:) */
-
-	  int is_end = (linep[-intag - keylen + 1] == '-')
-	              && (linep[-1] == ':')
-		      && (linep == line + 1 + intag + 1 + 1 + 1 + intag + 1 || linep[-intag - keylen] == '\n');
-	  if (is_end
-	      && strncmp(linep - 1 - intag, line + 1, intag))
+	  /* in multi-line value tags (+Key:/-Key:), check for end, cummulate */
+	  int is_end = line[intag_linestart] == '-' && linep[-1] == ':' && linep - line == intag_linestart + intag + 2;
+	  if (is_end && strncmp(linep - 1 - intag, line + 1, intag))
 	    {
-	      pool_debug(pool, SOLV_ERROR, "susetags: Nonmatching multi-line tags: %d: '%s' '%s' %d\n", pd.lineno, linep - 1 - intag, line + 1, intag);
+	      pool_debug(pool, SOLV_ERROR, "susetags: Nonmatching multi-line tags: %d: '%s' '%.*s'\n", pd.lineno, linep - 1 - intag, intag, line + 1);
 	    }
-	  if (cummulate && !is_end)
+	  if (!is_end)
 	    {
-	      *linep++ = '\n';
-	      continue;
+	      if (cummulate)
+		{
+		  *linep++ = '\n';
+		  intag_linestart = linep - line;
+		  continue;
+		}
+	      intag_linestart = intag + 3;
+	      linep = line + intag_linestart;
+	      if (!*linep)
+		continue;		/* ignore empty lines, bnc#381828 */
 	    }
-	  if (cummulate && is_end)
-	    {
-	      linep[-intag - keylen + 1] = 0;
-	      if (linep[-intag - keylen] == '\n')
-	        linep[-intag - keylen] = 0;
-	      linep = line;
-	      intag = 0;
-	    }
-	  if (!cummulate && is_end)
+	  else
 	    {
 	      intag = 0;
 	      linep = line;
-	      continue;
+	      if (!cummulate)
+		continue;
+	      line[intag_linestart] = 0;
+	      if (line[intag_linestart - 1] == '\n')
+	        line[intag_linestart - 1] = 0;		/* strip trailing newline */
 	    }
-	  if (!cummulate && !is_end)
-	    linep = line + intag + keylen;
 	}
       else
 	linep = line;
 
-      if (!intag && line[0] == '+' && line[1] && line[1] != ':') /* start of +Key:/-Key: tag */
+      /* ignore comments and empty lines */
+      if (!*line || *line == '#')
+	continue;
+
+      /* ignore malformed lines */
+      if (!(line[0] && line[1] && line[2] && line[3] && (line[4] == ':' || line[4] == '.')))
+        continue;
+
+      if (!intag && line[0] == '+' && line[1] != ':') /* start of +Key:/-Key: tag */
 	{
 	  char *tagend = strchr(line, ':');
-	  if (!tagend)
+	  if (!tagend || tagend - line > 100)
 	    {
 	      pd.ret = pool_error(pool, -1, "susetags: line %d: bad line '%s'\n", pd.lineno, line);
 	      break;
 	    }
-	  intag = tagend - (line + 1);
+	  intag = tagend - (line + 1);		/* set to tagsize */
 	  cummulate = 0;
-	  switch (tag_from_string(line))       /* check if accumulation is needed */
+	  switch (tag_from_string(line))	/* check if accumulation is needed */
 	    {
 	      case CTAG('+', 'D', 'e', 's'):
 	      case CTAG('+', 'E', 'u', 'l'):
 	      case CTAG('+', 'I', 'n', 's'):
 	      case CTAG('+', 'D', 'e', 'l'):
 	      case CTAG('+', 'A', 'u', 't'):
-	        if (line[4] == ':' || line[4] == '.')
-	          cummulate = 1;
+	        cummulate = 1;
 		break;
 	      default:
 		break;
 	    }
-	  line[0] = '=';                       /* handle lines between +Key:/-Key: as =Key: */
-	  line[intag + keylen - 1] = ' ';
-	  linep = line + intag + keylen;
+	  line[0] = '=';			/* handle lines between +Key:/-Key: as =Key: */
+	  line[intag + 2] = ' ';
+	  intag_linestart = intag + 3;
+	  linep = line + intag_linestart;
 	  continue;
 	}
-      if (*line == '#' || !*line)
-	continue;
-      if (! (line[0] && line[1] && line[2] && line[3] && (line[4] == ':' || line[4] == '.')))
-        continue;
+
+      /* support language suffix */
+      keylen = 3;
       line_lang[0] = 0;
       if (line[4] == '.')
         {
@@ -671,6 +555,7 @@ repo_add_susetags(Repo *repo, FILE *fp, Id defvendor, const char *language, int 
               line_lang[langsize] = 0;
             }
         }
+
       tag = tag_from_string(line);
 
       if (indelta)
@@ -1035,8 +920,22 @@ repo_add_susetags(Repo *repo, FILE *fp, Id defvendor, const char *language, int 
 	      continue;
 	    }
 	  case CTAG('=', 'D', 'i', 'r'):
-	    add_dirline(&pd, line + 6);
-	    continue;
+	    if (split(line + 6, sp, 6) == 5)
+	      {
+	        long filesz, filenum;
+		Id did;
+
+	        filesz = strtol(sp[1], 0, 0);
+	        filesz += strtol(sp[2], 0, 0);
+	        filenum = strtol(sp[3], 0, 0);
+	        filenum += strtol(sp[4], 0, 0);
+	        if (*sp[0] != '/')
+		  *--sp[0] = '/'; 	/* hack: we know that there's room for a / */
+	        did = repodata_str2dir(data, sp[0], 1);
+	        queue_push(&pd.diskusageq, did);
+	        queue_push2(&pd.diskusageq, (Id)filesz, (Id)filenum);
+	      }
+	    break;
 	  case CTAG('=', 'C', 'a', 't'):
 	    repodata_set_poolstr(data, handle, langtag(&pd, SOLVABLE_CATEGORY, line_lang), line + 3 + keylen);
 	    break;
@@ -1066,27 +965,22 @@ repo_add_susetags(Repo *repo, FILE *fp, Id defvendor, const char *language, int 
 
 	  case CTAG('=', 'F', 'l', 's'):
 	    {
-	      char *p = strrchr(line + 6, '/');
+	      char *p, *file = line + 6;
 	      Id did;
-	      /* strip trailing slash */
-	      if (p && p != line + 6 && !p[1])
+
+	      if (*file != '/')
+	        *--file = '/';		/* hack: we know there is room */
+	      p  = strrchr(file, '/');
+	      /* strip trailing slashes */
+	      while (p != file && !p[1])
 		{
 		  *p = 0;
-		  p = strrchr(line + 6, '/');
+		  p = strrchr(file, '/');
 		}
-	      if (p)
-		{
-		  *p++ = 0;
-		  did = repodata_str2dir(data, line + 6, 1);
-		}
-	      else
-		{
-		  p = line + 6;
-		  did = 0;
-		}
-	      if (!did)
-	        did = repodata_str2dir(data, "/", 1);
+	      *p++ = 0;
+	      did = repodata_str2dir(data, *file ? file : "/", 1);
 	      repodata_add_dirstr(data, handle, SOLVABLE_FILELIST, did, p);
+	      line[5] = ' ';
 	      break;
 	    }
 	  case CTAG('=', 'H', 'd', 'r'):
@@ -1179,5 +1073,6 @@ repo_add_susetags(Repo *repo, FILE *fp, Id defvendor, const char *language, int 
   solv_free(pd.language);
   solv_free(line);
   join_freemem(&pd.jd);
+  queue_free(&pd.diskusageq);
   return pd.ret;
 }

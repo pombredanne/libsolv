@@ -68,11 +68,40 @@ expand_simpledeps(Pool *pool, Queue *bq, int start, int split)
   return newsplit;
 }
 
-/* invert all literals in the blocks. note that this also turns DNF into CNF and vice versa */
+#ifdef CPLXDEBUG
 static void
-invert_depblocks(Pool *pool, Queue *bq, int start)
+print_depblocks(Pool *pool, Queue *bq, int start)
+{
+  int i;
+
+  for (i = start; i < bq->count; i++)
+    {
+      if (bq->elements[i] == pool->nsolvables)
+	{
+	  Id *dp = pool->whatprovidesdata + bq->elements[++i];
+	  printf(" (");
+	  while (*dp)
+	    printf(" %s", pool_solvid2str(pool, *dp++));
+	  printf(" )");
+	}
+      else if (bq->elements[i] > 0)
+	printf(" %s", pool_solvid2str(pool, bq->elements[i]));
+      else if (bq->elements[i] < 0)
+	printf(" -%s", pool_solvid2str(pool, -bq->elements[i]));
+      else
+	printf(" ||");
+    }
+  printf("\n");
+}
+#endif
+
+/* invert all literals in the blocks. note that this also turns DNF into CNF and vice versa */
+static int
+invert_depblocks(Pool *pool, Queue *bq, int start, int r)
 {
   int i, j, end;
+  if (r == 0 || r == 1)
+    return r ? 0 : 1;
   expand_simpledeps(pool, bq, start, 0);
   end = bq->count;
   for (i = j = start; i < end; i++)
@@ -82,7 +111,7 @@ invert_depblocks(Pool *pool, Queue *bq, int start)
           bq->elements[i] = -bq->elements[i];
 	  continue;
 	}
-      /* end of block reached, reorder */
+      /* end of block reached, reverse */
       if (i - 1 > j)
 	{
 	  int k;
@@ -95,6 +124,7 @@ invert_depblocks(Pool *pool, Queue *bq, int start)
 	}
       j = i + 1;
     }
+  return -1;
 }
 
 /*
@@ -104,11 +134,12 @@ invert_depblocks(Pool *pool, Queue *bq, int start)
  *  -1: at least one block
  */
 static int
-normalize_dep(Pool *pool, Id dep, Queue *bq, int todnf)
+normalize_dep(Pool *pool, Id dep, Queue *bq, int flags)
 {
   int bqcnt = bq->count;
   int bqcnt2;
-  Id dp;
+  int todnf = flags & CPLXDEPS_TODNF ? 1 : 0;
+  Id p, dp;
 
 #ifdef CPLXDEBUG
   printf("normalize_dep %s todnf:%d\n", pool_dep2str(pool, dep), todnf);
@@ -118,59 +149,148 @@ normalize_dep(Pool *pool, Id dep, Queue *bq, int todnf)
       Reldep *rd = GETRELDEP(pool, dep);
       if (rd->flags == REL_AND || rd->flags == REL_OR || rd->flags == REL_COND)
 	{
-	  int flags = rd->flags;
+	  int rdflags = rd->flags;
+	  Id name = rd->name;
+	  Id evr = rd->evr;
 	  int r, mode;
 	  
-	  /* in inverted mode, COND means AND. otherwise it means OR NOT */
-	  if (flags == REL_COND && todnf)
-	    flags = REL_AND;
-	  mode = flags == REL_AND ? 0 : 1;
+          if (rdflags == REL_COND)
+	    {
+	      /* check for relly complex ELSE case */
+	      if (ISRELDEP(evr))
+		{
+		  Reldep *rd2 = GETRELDEP(pool, evr);
+		  if (rd2->flags == REL_ELSE)
+		    {
+		      int r2;
+		      /* really complex case */
+		      if ((flags & CPLXDEPS_ELSE_MASK) == CPLXDEPS_ELSE_AND_1)
+			{
+			  /* A OR ~B */
+			  rdflags = REL_COND;
+			  evr = rd2->name;
+			}
+		      else if ((flags & CPLXDEPS_ELSE_MASK) == CPLXDEPS_ELSE_AND_2)
+			{
+			  /* C OR B */
+			  rdflags = REL_OR;
+			  name = rd2->evr;
+			  evr = rd2->name;
+			}
+		      else if ((flags & CPLXDEPS_ELSE_MASK) == CPLXDEPS_ELSE_OR_1)
+			{
+			  /* A AND B */
+			  rdflags = REL_AND;
+			  evr = rd2->name;
+			}
+		      else if ((flags & CPLXDEPS_ELSE_MASK) == CPLXDEPS_ELSE_OR_2)
+			{
+			  /* A AND C */
+			  rdflags = REL_AND;
+			  evr = rd2->evr;
+			}
+		      else if ((flags & CPLXDEPS_ELSE_MASK) == CPLXDEPS_ELSE_OR_3)
+			{
+			  /* C AND ~B */
+			  rdflags = REL_ELSE;
+			  name = rd2->evr;
+			  evr = rd2->name;
+			}
+		      else if (!todnf)
+			{
+			  /* we want AND: A IF (B ELSE C) -> (A OR ~B) AND (C OR B) */
+			  r = normalize_dep(pool, dep, bq, flags | CPLXDEPS_ELSE_AND_1);
+			  if (r == 0 && (flags & CPLXDEPS_DONTFIX) == 0)
+			    return 0;
+			  r2 = normalize_dep(pool, dep, bq, flags | CPLXDEPS_ELSE_AND_2);
+			  if (r2 == 0 && (flags & CPLXDEPS_DONTFIX) == 0)
+			    {
+			      queue_truncate(bq, bqcnt);
+			      return 0;
+			    }
+			  if (r == -1 || r2 == -1)
+			    return -1;
+			  return r == 1 || r2 == 1 ? 1 : 0;
+			}
+		      else
+			{
+			  int r2, r3;
+			  /* we want OR: A IF (B ELSE C) -> (A AND B) OR (A AND C) OR (~B AND C) */
+			  r = normalize_dep(pool, dep, bq, flags | CPLXDEPS_ELSE_OR_1);
+			  if (r == 1)
+			    return 1;
+			  r2 = normalize_dep(pool, dep, bq, flags | CPLXDEPS_ELSE_OR_2);
+			  if (r2 == 1)
+			    {
+			      queue_truncate(bq, bqcnt);
+			      return 1;
+			    }
+			  r3 = normalize_dep(pool, dep, bq, flags | CPLXDEPS_ELSE_OR_3);
+			  if (r3 == 1)
+			    {
+			      queue_truncate(bq, bqcnt);
+			      return 1;
+			    }
+			  if (r == -1 || r2 == -1 || r3 == -1)
+			    return -1;
+			  return 0;
+			}
+		    }
+		}
+	    }
+	  mode = rdflags == REL_AND || rdflags == REL_ELSE ? 0 : 1;
 
 	  /* get blocks of first argument */
-	  r = normalize_dep(pool, rd->name, bq, todnf);
+	  r = normalize_dep(pool, name, bq, flags);
 	  if (r == 0)
 	    {
-	      if (flags == REL_AND)
+	      if (rdflags == REL_ELSE)
 		return 0;
-	      if (flags == REL_COND)
+	      if (rdflags == REL_AND && (flags & CPLXDEPS_DONTFIX) == 0)
+		return 0;
+	      if (rdflags == REL_COND)
 		{
-		  r = normalize_dep(pool, rd->evr, bq, todnf ^ 1);
-		  if (r == 0 || r == 1)
-		    return r == 0 ? 1 : 0;
-		  invert_depblocks(pool, bq, bqcnt);	/* invert block for COND */
-		  return r;
+		  r = normalize_dep(pool, evr, bq, (flags ^ CPLXDEPS_TODNF) & ~CPLXDEPS_DONTFIX);
+		  return invert_depblocks(pool, bq, bqcnt, r);	/* invert block for COND */
 		}
-	      return normalize_dep(pool, rd->evr, bq, todnf);
+	      return normalize_dep(pool, evr, bq, flags);
 	    }
 	  if (r == 1)
 	    {
-	      if (flags != REL_AND)
+	      if (rdflags == REL_ELSE)
+		{
+		  r = normalize_dep(pool, evr, bq, (flags ^ CPLXDEPS_TODNF) & ~CPLXDEPS_DONTFIX);
+		  return invert_depblocks(pool, bq, bqcnt, r);	/* invert block for ELSE */
+		}
+	      if (rdflags == REL_OR || rdflags == REL_COND)
 		return 1;
-	      return normalize_dep(pool, rd->evr, bq, todnf);
+	      return normalize_dep(pool, evr, bq, flags);
 	    }
 
 	  /* get blocks of second argument */
 	  bqcnt2 = bq->count;
-	  /* COND is OR with NEG on evr block, so we invert the todnf flag in that case*/
-	  r = normalize_dep(pool, rd->evr, bq, flags == REL_COND ? todnf ^ 1 : todnf);
+	  /* COND is OR with NEG on evr block, so we invert the todnf flag in that case */
+	  r = normalize_dep(pool, evr, bq, rdflags == REL_COND || rdflags == REL_ELSE ? ((flags ^ CPLXDEPS_TODNF) & ~CPLXDEPS_DONTFIX) : flags);
+	  if (rdflags == REL_COND || rdflags == REL_ELSE)
+	    r = invert_depblocks(pool, bq, bqcnt2, r);	/* invert 2nd block */
 	  if (r == 0)
 	    {
-	      if (flags == REL_OR)
+	      if (rdflags == REL_OR)
+		return -1;
+	      if (rdflags == REL_AND && (flags & CPLXDEPS_DONTFIX) != 0)
 		return -1;
 	      queue_truncate(bq, bqcnt);
-	      return flags == REL_COND ? 1 : 0;
+	      return 0;
 	    }
 	  if (r == 1)
 	    {
-	      if (flags == REL_OR)
+	      if (rdflags == REL_COND || rdflags == REL_OR)
 		{
 		  queue_truncate(bq, bqcnt);
 		  return 1;
 		}
 	      return -1;
 	    }
-	  if (flags == REL_COND)
-	    invert_depblocks(pool, bq, bqcnt2);	/* invert 2nd block */
 	  if (mode == todnf)
 	    {
 	      /* simple case: just join em. nothing more to do here. */
@@ -247,16 +367,29 @@ normalize_dep(Pool *pool, Id dep, Queue *bq, int todnf)
     return dp == 2 ? 1 : 0;
   if (pool->whatprovidesdata[dp] == SYSTEMSOLVABLE)
     return 1;
-  if (todnf)
+  bqcnt = bq->count;
+  if ((flags & CPLXDEPS_NAME) != 0)
     {
-      for (; pool->whatprovidesdata[dp]; dp++)
-	queue_push2(bq, pool->whatprovidesdata[dp], 0);
+      while ((p = pool->whatprovidesdata[dp++]) != 0)
+	{
+	  if (!pool_match_nevr(pool, pool->solvables + p, dep))
+	    continue;
+	  queue_push(bq, p);
+	  if (todnf)
+	    queue_push(bq, 0);
+	}
+    }
+  else if (todnf)
+    {
+      while ((p = pool->whatprovidesdata[dp++]) != 0)
+        queue_push2(bq, p, 0);
     }
   else
-    {
-      queue_push2(bq, pool->nsolvables, dp);	/* not yet expanded marker */
-      queue_push(bq, 0);
-    }
+    queue_push2(bq, pool->nsolvables, dp);	/* not yet expanded marker + offset */
+  if (bq->count == bqcnt)
+    return 0;	/* no provider */
+  if (!todnf)
+    queue_push(bq, 0);	/* finish block */
   return -1;
 }
 
@@ -265,48 +398,56 @@ pool_normalize_complex_dep(Pool *pool, Id dep, Queue *bq, int flags)
 {
   int i, bqcnt = bq->count;
 
-  i = normalize_dep(pool, dep, bq, (flags & CPLXDEPS_TODNF) ? 1 : 0);
+  i = normalize_dep(pool, dep, bq, flags);
   if ((flags & CPLXDEPS_EXPAND) != 0)
     {
       if (i != 0 && i != 1)
         expand_simpledeps(pool, bq, bqcnt, 0);
     }
   if ((flags & CPLXDEPS_INVERT) != 0)
-    {
-      if (i == 0 || i == 1)
-	i ^= 1;
-      else
-	invert_depblocks(pool, bq, bqcnt);
-    }
+    i = invert_depblocks(pool, bq, bqcnt, i);
 #ifdef CPLXDEBUG
   if (i == 0)
     printf("NONE\n");
   else if (i == 1)
     printf("ALL\n");
   else
-    {
-      for (i = bqcnt; i < bq->count; i++)
-	{
-	  if (bq->elements[i] == pool->nsolvables)
-	    {
-	      Id *dp = pool->whatprovidesdata + bq->elements[++i];
-	      printf(" (");
-	      while (*dp)
-	        printf(" %s", pool_solvid2str(pool, *dp++));
-	      printf(" )");
-	    }
-	  else if (bq->elements[i] > 0)
-	    printf(" %s", pool_solvid2str(pool, bq->elements[i]));
-	  else if (bq->elements[i] < 0)
-	    printf(" -%s", pool_solvid2str(pool, -bq->elements[i]));
-	  else
-	    printf(" ||");
-	}
-      printf("\n");
-      i = -1;
-    }
+    print_depblocks(pool, bq, bqcnt);
 #endif
   return i;
+}
+
+void
+pool_add_pos_literals_complex_dep(Pool *pool, Id dep, Queue *q, Map *m, int neg)
+{
+  while (ISRELDEP(dep))
+    {
+      Reldep *rd = GETRELDEP(pool, dep);
+      if (rd->flags != REL_AND && rd->flags != REL_OR && rd->flags != REL_COND)
+	break;
+      pool_add_pos_literals_complex_dep(pool, rd->name, q, m, neg);
+      dep = rd->evr;
+      if (rd->flags == REL_COND)
+	{
+	  neg = !neg;
+	  if (ISRELDEP(dep))
+	    {
+	      Reldep *rd2 = GETRELDEP(pool, rd->evr);
+	      if (rd2->flags == REL_ELSE)
+		{
+	          pool_add_pos_literals_complex_dep(pool, rd2->evr, q, m, !neg);
+		  dep = rd2->name;
+		}
+	    }
+	}
+    }
+  if (!neg)
+    {
+      Id p, pp;
+      FOR_PROVIDES(p, pp, dep)
+	if (!MAPTST(m, p))
+	  queue_push(q, p);
+    }
 }
 
 #endif	/* ENABLE_COMPLEX_DEPS */

@@ -16,8 +16,7 @@
 extern void solver_run_sat(Solver *solv, int disablerules, int doweak);
 extern void solver_reset(Solver *solv);
 
-extern int solver_dep_installed(Solver *solv, Id dep);
-extern int solver_splitprovides(Solver *solv, Id dep);
+extern int solver_splitprovides(Solver *solv, Id dep, Map *m);
 
 static inline int
 solver_dep_fulfilled(Solver *solv, Id dep)
@@ -28,7 +27,23 @@ solver_dep_fulfilled(Solver *solv, Id dep)
   if (ISRELDEP(dep))
     {
       Reldep *rd = GETRELDEP(pool, dep);
-      if (rd->flags == REL_AND || rd->flags == REL_COND)
+      if (rd->flags == REL_COND)
+	{
+	  if (ISRELDEP(rd->evr))
+	    {
+	      Reldep *rd2 = GETRELDEP(pool, rd->evr);
+	      if (rd2->flags == REL_ELSE)
+		{
+		  if (solver_dep_fulfilled(solv, rd2->name))
+		    return solver_dep_fulfilled(solv, rd->name);
+		  return solver_dep_fulfilled(solv, rd2->evr);
+		}
+	    }
+          if (solver_dep_fulfilled(solv, rd->name))
+	    return 1;
+	  return !solver_dep_fulfilled(solv, rd->evr);
+	}
+      if (rd->flags == REL_AND)
         {
           if (!solver_dep_fulfilled(solv, rd->name))
             return 0;
@@ -41,9 +56,7 @@ solver_dep_fulfilled(Solver *solv, Id dep)
           return solver_dep_fulfilled(solv, rd->evr);
 	}
       if (rd->flags == REL_NAMESPACE && rd->name == NAMESPACE_SPLITPROVIDES)
-        return solver_splitprovides(solv, rd->evr);
-      if (rd->flags == REL_NAMESPACE && rd->name == NAMESPACE_INSTALLED)
-        return solver_dep_installed(solv, rd->evr);
+        return solver_splitprovides(solv, rd->evr, 0);
     }
   FOR_PROVIDES(p, pp, dep)
     {

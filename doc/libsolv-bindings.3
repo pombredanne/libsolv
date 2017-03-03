@@ -1,13 +1,13 @@
 '\" t
 .\"     Title: Libsolv-Bindings
 .\"    Author: [see the "Author" section]
-.\" Generator: DocBook XSL Stylesheets v1.78.0 <http://docbook.sf.net/>
-.\"      Date: 09/29/2014
+.\" Generator: DocBook XSL Stylesheets v1.78.1 <http://docbook.sf.net/>
+.\"      Date: 12/14/2016
 .\"    Manual: LIBSOLV
 .\"    Source: libsolv
 .\"  Language: English
 .\"
-.TH "LIBSOLV\-BINDINGS" "3" "09/29/2014" "libsolv" "LIBSOLV"
+.TH "LIBSOLV\-BINDINGS" "3" "12/14/2016" "libsolv" "LIBSOLV"
 .\" -----------------------------------------------------------------
 .\" * Define some portability stuff
 .\" -----------------------------------------------------------------
@@ -312,6 +312,99 @@ Note that boolean methods have an added trailing \(lq?\(rq, to be consistent wit
 .if n \{\
 .RE
 .\}
+.SH "TCL SPECIFICS"
+.sp
+Libsolv\(cqs tcl bindings can be loaded with the following statement:
+.sp
+.if n \{\
+.RS 4
+.\}
+.nf
+\fBpackage require solv\fR
+.fi
+.if n \{\
+.RE
+.\}
+.sp
+Objects are either created by calling class name prefixed with \(lqnew_\(rq, or they are returned by calling methods on other objects\&.
+.sp
+.if n \{\
+.RS 4
+.\}
+.nf
+\fBset pool [solv::new_Pool]\fR
+\fBset repo [\fR\fI$pool\fR \fBadd_repo "my_first_repo"]\fR
+.fi
+.if n \{\
+.RE
+.\}
+.sp
+Swig provides a \(lqcget\(rq method to read object attributes, and a \(lqconfigure\(rq method to write them:
+.sp
+.if n \{\
+.RS 4
+.\}
+.nf
+\fI$pool\fR \fBconfigure \-appdata 42\fR
+\fBputs "appdata is [\fR\fI$pool\fR \fBcget \-appdata]"\fR
+.fi
+.if n \{\
+.RE
+.\}
+.sp
+The tcl bindings provide a little helper to work with iterators in a foreach style:
+.sp
+.if n \{\
+.RS 4
+.\}
+.nf
+\fBset iter [\fR\fI$pool\fR \fBsolvables_iter]\fR
+\fBsolv::iter s\fR \fI$iter\fR \fB{ \&.\&.\&. }\fR
+.fi
+.if n \{\
+.RE
+.\}
+.sp
+libsolv\(cqs arrays are mapped to tcl\(cqs lists:
+.sp
+.if n \{\
+.RS 4
+.\}
+.nf
+\fBset jobs [list\fR \fI$job1 $job2\fR\fB]\fR
+\fBset problems [\fR\fI$solver\fR \fBsolve\fR \fI$jobs\fR\fB]\fR
+\fBputs "We have [llength\fR \fI$problems\fR\fB] problems\&.\&.\&."\fR
+.fi
+.if n \{\
+.RE
+.\}
+.sp
+Stringification is done by calling the object\(cqs \(lqstr\(rq method\&.
+.sp
+.if n \{\
+.RS 4
+.\}
+.nf
+\fBputs [\fR\fI$dep\fR \fBstr]\fR
+.fi
+.if n \{\
+.RE
+.\}
+.sp
+There is one exception: you have to use \(lqstringify\(rq for Datamatch objects, as swig reports a clash with the \(lqstr\(rq attribute\&. Some objects also support a \(lq==\(rq method for equality tests, and a \(lq!=\(rq method\&.
+.sp
+Swig implements all constants as numeric variables, constants belonging to a libsolv class are prefixed with the class name:
+.sp
+.if n \{\
+.RS 4
+.\}
+.nf
+\fI$pool\fR \fBset_flag\fR \fI$solv::Pool_POOL_FLAG_OBSOLETEUSESCOLORS\fR  \fB1\fR
+\fBputs [\fR\fI$solvable\fR \fBlookup_str\fR \fI$solv::SOLVABLE_SUMMARY\fR\fB]\fR
+.fi
+.if n \{\
+.RE
+.\}
 .SH "THE SOLV CLASS"
 .sp
 This is the main namespace of the library, you cannot create objects of this type but it contains some useful constants\&.
@@ -331,7 +424,7 @@ the \(lqequals to\(rq bit
 .PP
 \fBREL_GT\fR
 .RS 4
-the \(lqgreater then\(rq bit
+the \(lqgreater than\(rq bit
 .RE
 .PP
 \fBREL_ARCH\fR
@@ -516,7 +609,7 @@ If a package is installed in multiversionmode, rpm used to ignore both the impli
 .PP
 \fBPOOL_FLAG_ADDFILEPROVIDESFILTERED\fR
 .RS 4
-Make the addfileprovides method only add files from the standard locations (i\&.e\&. the \(lqbin\(rq and \(lqetc\(rq directories)\&. This is useful if you have only few packages that use non\-standard file dependencies, but you still wand the fast speed that addfileprovides() generates\&.
+Make the addfileprovides method only add files from the standard locations (i\&.e\&. the \(lqbin\(rq and \(lqetc\(rq directories)\&. This is useful if you have only few packages that use non\-standard file dependencies, but you still want the fast speed that addfileprovides() generates\&.
 .RE
 .SS "METHODS"
 .sp
@@ -548,7 +641,7 @@ Force a free of the pool\&. After this call, you must not access any object that
 .RE
 .\}
 .sp
-Break the ownership relation betwen the binding object and the pool\&. After this call, the pool will not get freed even if the object goes out of scope\&. This also means that you must manually call the free method to free the pool data\&.
+Break the ownership relation between the binding object and the pool\&. After this call, the pool will not get freed even if the object goes out of scope\&. This also means that you must manually call the free method to free the pool data\&.
 .sp
 .if n \{\
 .RS 4
@@ -722,7 +815,7 @@ my \fI@ids\fR \fB=\fR \fI$pool\fR\fB\->addfileprovides_queue()\fR;
 .RE
 .\}
 .sp
-Some package managers like rpm allow dependencies on files contained in other packages\&. To allow libsolv to deal with those dependencies in an efficient way, you need to call the addfileprovides method after creating and reading all repositories\&. This method will scan all dependency for file names and than scan all packages for matching files\&. If a filename has been matched, it will be added to the provides list of the corresponding package\&. The addfileprovides_queue variant works the same way but returns an array containing all file dependencies\&. This information can be stored in the meta section of the repositories to speed up the next time the repository is loaded and addfileprovides is called\&.
+Some package managers like rpm allow dependencies on files contained in other packages\&. To allow libsolv to deal with those dependencies in an efficient way, you need to call the addfileprovides method after creating and reading all repositories\&. This method will scan all dependency for file names and then scan all packages for matching files\&. If a filename has been matched, it will be added to the provides list of the corresponding package\&. The addfileprovides_queue variant works the same way but returns an array containing all file dependencies\&. This information can be stored in the meta section of the repositories to speed up the next time the repository is loaded and addfileprovides is called\&.
 .sp
 .if n \{\
 .RS 4
@@ -752,7 +845,7 @@ my \fI@solvables\fR \fB=\fR \fI$pool\fR\fB\->whatprovides(\fR\fI$dep\fR\fB)\fR;
 .RE
 .\}
 .sp
-Return all solvables that provide the specified dependency\&. You can use either a Dep object or an simple Id as argument\&.
+Return all solvables that provide the specified dependency\&. You can use either a Dep object or a simple Id as argument\&.
 .sp
 .if n \{\
 .RS 4
@@ -915,7 +1008,22 @@ Get/Set fixed jobs stored in the pool\&. Those jobs are automatically appended t
 .RE
 .\}
 .sp
-Set the callback function called when repository metadata needs to be loaded on demand\&. To make use of this feature, you need to create repodata stubs that tell the library which data is available but not loaded\&. If later on the data needs to be accessed, the callback function is called with a repodata argument\&. You can then load the data (maybe fetching it first from an remote server)\&. The callback should return true if the data has been made available\&.
+Set the callback function called when repository metadata needs to be loaded on demand\&. To make use of this feature, you need to create repodata stubs that tell the library which data is available but not loaded\&. If later on the data needs to be accessed, the callback function is called with a repodata argument\&. You can then load the data (maybe fetching it first from a remote server)\&. The callback should return true if the data has been made available\&.
+.sp
+.if n \{\
+.RS 4
+.\}
+.nf
+/* bindings only */
+\fI$pool\fR\fB\->appdata_disown()\fR
+\fIpool\fR\fB\&.appdata_disown()\fR
+\fIpool\fR\fB\&.appdata_disown()\fR
+.fi
+.if n \{\
+.RE
+.\}
+.sp
+Decrement the reference count of the appdata object\&. This can be used to break circular references (e\&.g\&. if the pool\(cqs appdata value points to some meta data structure that contains a pool handle)\&. If used incorrectly, this method can lead to application crashes, so beware\&. (This method is a no\-op for ruby and tcl\&.)
 .SS "DATA RETRIEVAL METHODS"
 .sp
 In the following functions, the \fIkeyname\fR argument describes what to retrieve\&. For the standard cases you can use the available Id constants\&. For example,
@@ -1481,7 +1589,7 @@ Do not create stubs for repository parts that can be downloaded on demand\&.
 .PP
 \fBSUSETAGS_RECORD_SHARES\fR
 .RS 4
-This is specific to the add_susetags() method\&. Susetags allows to refer to already read packages to save disk space\&. If this data sharing needs to work over multiple calls to add_susetags, you need to specify this flag so that the share information is made available to subsequent calls\&.
+This is specific to the add_susetags() method\&. Susetags allows one to refer to already read packages to save disk space\&. If this data sharing needs to work over multiple calls to add_susetags, you need to specify this flag so that the share information is made available to subsequent calls\&.
 .RE
 .SS "METHODS"
 .sp
@@ -1865,7 +1973,7 @@ Add metadata stored in the "rpm\-md" format (i\&.e\&. from files in the \(lqrepo
 .RE
 .\}
 .sp
-Add the repomd\&.xml meta description from the "rpm\-md" format to the repository\&. This file contains information about the repository like keywords, and also a list of all database files with checksums\&. The data is added the the "meta" section of the repository, i\&.e\&. no package gets created\&.
+Add the repomd\&.xml meta description from the "rpm\-md" format to the repository\&. This file contains information about the repository like keywords, and also a list of all database files with checksums\&. The data is added to the "meta" section of the repository, i\&.e\&. no package gets created\&.
 .sp
 .if n \{\
 .RS 4
@@ -2015,7 +2123,7 @@ Add the contents of the archlinux installed package database to the repository\&
 .RE
 .\}
 .sp
-Add the \(lqcontent\(rq meta description from the susetags format to the repository\&. This file contains information about the repository like keywords, and also a list of all database files with checksums\&. The data is added the the "meta" section of the repository, i\&.e\&. no package gets created\&.
+Add the \(lqcontent\(rq meta description from the susetags format to the repository\&. This file contains information about the repository like keywords, and also a list of all database files with checksums\&. The data is added to the "meta" section of the repository, i\&.e\&. no package gets created\&.
 .sp
 .if n \{\
 .RS 4
@@ -2406,8 +2514,8 @@ Return true if the solvable is installed on the system\&.
 .nf
 \fBbool identical(Solvable *\fR\fIother\fR\fB)\fR
 \fI$solvable\fR\fB\->identical(\fR\fI$other\fR\fB)\fR
-\fI$solvable\fR\fB\&.identical(\fR\fIother\fR\fB)\fR
-\fI$solvable\fR\fB\&.identical?(\fR\fIother\fR\fB)\fR
+\fIsolvable\fR\fB\&.identical(\fR\fIother\fR\fB)\fR
+\fIsolvable\fR\fB\&.identical?(\fR\fIother\fR\fB)\fR
 .fi
 .if n \{\
 .RE
@@ -2420,15 +2528,30 @@ Return true if the two solvables are identical\&.
 .\}
 .nf
 \fBint evrcmp(Solvable *\fR\fIother\fR\fB)\fR
-\fI$solvable\fR\fB\->evrcmp(\fR\fIother\fR\fB)\fR
-\fI$solvable\fR\fB\&.evrcmp(\fR\fIother\fR\fB)\fR
-\fI$solvable\fR\fB\&.evrcmp(\fR\fIother\fR\fB)\fR
+\fI$solvable\fR\fB\->evrcmp(\fR\fI$other\fR\fB)\fR
+\fIsolvable\fR\fB\&.evrcmp(\fR\fIother\fR\fB)\fR
+\fIsolvable\fR\fB\&.evrcmp(\fR\fIother\fR\fB)\fR
 .fi
 .if n \{\
 .RE
 .\}
 .sp
-Returns \-1 if the epoch/version/release of the solvable is less then the one from the other solvable, 1 if it is greater, and 0 if they are equal\&. Note that "equal" does not mean that the evr is identical\&.
+Returns \-1 if the epoch/version/release of the solvable is less than the one from the other solvable, 1 if it is greater, and 0 if they are equal\&. Note that "equal" does not mean that the evr is identical\&.
+.sp
+.if n \{\
+.RS 4
+.\}
+.nf
+\fBint matchesdep(Id\fR \fIkeyname\fR\fB, DepId\fR \fIid\fR\fB, Id\fR \fImarker\fR \fB= \-1)\fR
+\fI$solvable\fR\fB\->matchesdep(\fR\fI$keyname\fR\fB,\fR \fI$dep\fR\fB)\fR
+\fIsolvable\fR\fB\&.matchesdep(\fR\fIkeyname\fR\fB,\fR \fIdep\fR\fB)\fR
+\fIsolvable\fR\fB\&.matchesdep?(\fR\fIkeyname\fR\fB,\fR \fIdep\fR\fB)\fR
+.fi
+.if n \{\
+.RE
+.\}
+.sp
+Return true if the dependencies stored in keyname match the specified dependeny\&.
 .sp
 .if n \{\
 .RS 4
@@ -3143,6 +3266,21 @@ Fix dependency problems of matching installed packages\&. The default is to igno
 The matching installed packages are considered to be installed by a user, thus not installed to fulfill some dependency\&. This is needed input for the calculation of unneeded packages for jobs that have the SOLVER_CLEANDEPS flag set\&.
 .RE
 .PP
+\fBSOLVER_ALLOWUNINSTALL\fR
+.RS 4
+Allow the solver to deinstall the matching installed packages if they get into the way of resolving a dependency\&. This is like the SOLVER_FLAG_ALLOW_UNINSTALL flag, but limited to a specific set of packages\&.
+.RE
+.PP
+\fBSOLVER_FAVOR\fR
+.RS 4
+Prefer the specified packages if the solver encounters an alternative\&. If a job contains multiple matching favor/disfavor elements, the last one takes precedence\&.
+.RE
+.PP
+\fBSOLVER_DISFAVOR\fR
+.RS 4
+Avoid the specified packages if the solver encounters an alternative\&. This can also be used to block recommended or supplemented packages from being installed\&.
+.RE
+.PP
 \fBSOLVER_JOBMASK\fR
 .RS 4
 A mask containing all the above action bits\&.
@@ -3406,6 +3544,11 @@ Like SOLVER_FLAG_ALLOW_NAMECHANGE, but used in distupgrade mode\&.
 If multiple packages obsolete an installed package, the solver checks the provides of every such package and ignores all packages that do not provide the installed package name\&. Thus, you can have an official update candidate that provides the old name, and other packages that also obsolete the package but are not considered for updating\&. If you cannot use this feature, you can turn it off by setting this flag\&.
 .RE
 .PP
+\fBSOLVER_FLAG_NEED_UPDATEPROVIDE\fR
+.RS 4
+This is somewhat the opposite of SOLVER_FLAG_NO_UPDATEPROVIDE: Only packages that provied the installed package names are considered for updating\&.
+.RE
+.PP
 \fBSOLVER_FLAG_SPLITPROVIDES\fR
 .RS 4
 Make the solver aware of special provides of the form \(lq<packagename>:<path>\(rq used in SUSE systems to support package splits\&.
@@ -3448,7 +3591,27 @@ Ignore dependencies of orphaned packages that get in the way of resolving non\-o
 .PP
 \fBSOLVER_FLAG_FOCUS_INSTALLED\fR
 .RS 4
-Resolve installed packages before resolving the given job\&. Setting this flag means that the solver will prefer picking a package version that fits the other installed packages over updating installed packages\&.
+Resolve installed packages before resolving the given jobs\&. Setting this flag means that the solver will prefer picking a package version that fits the other installed packages over updating installed packages\&.
+.RE
+.PP
+\fBSOLVER_FLAG_FOCUS_BEST\fR
+.RS 4
+First resolve the given jobs, then the dependencies of the resulting packages, then resolve all already installed packages\&. This will result in more packages being updated as when the flag is not used\&.
+.RE
+.PP
+\fBSOLVER_FLAG_INSTALL_ALSO_UPDATES\fR
+.RS 4
+Update the package if a job is already fulfilled by an installed package\&.
+.RE
+.PP
+\fBSOLVER_FLAG_YUM_OBSOLETES\fR
+.RS 4
+Turn on yum\-like package split handling\&. See the yum documentation for more details\&.
+.RE
+.PP
+\fBSOLVER_FLAG_URPM_REORDER\fR
+.RS 4
+Turn on urpm like package reordering for kernel packages\&. See the urpm documentation for more details\&.
 .RE
 .sp
 Basic rule types:
@@ -3470,7 +3633,7 @@ A rule to implement the update policy of installed packages\&. Every installed p
 .PP
 \fBSOLVER_RULE_FEATURE\fR
 .RS 4
-Feature rules are fallback rules used when a update rule is disabled\&. They include all packages that may replace the installed package ignoring the update policy, i\&.e\&. they contain downgrades, arch changes and so on\&. Without them, the solver would simply erase installed packages if their update rule gets disabled\&.
+Feature rules are fallback rules used when an update rule is disabled\&. They include all packages that may replace the installed package ignoring the update policy, i\&.e\&. they contain downgrades, arch changes and so on\&. Without them, the solver would simply erase installed packages if their update rule gets disabled\&.
 .RE
 .PP
 \fBSOLVER_RULE_JOB\fR
@@ -3480,7 +3643,7 @@ Job rules implement the job given to the solver\&.
 .PP
 \fBSOLVER_RULE_DISTUPGRADE\fR
 .RS 4
-This are simple negative assertions that make sure that only packages are kept that are also available in one of the repositories\&.
+These are simple negative assertions that make sure that only packages are kept that are also available in one of the repositories\&.
 .RE
 .PP
 \fBSOLVER_RULE_INFARCH\fR
@@ -3495,7 +3658,7 @@ Choice rules are used to make sure that the solver prefers updating to installin
 .PP
 \fBSOLVER_RULE_LEARNT\fR
 .RS 4
-These rules are generated by the solver to keep it from running into the same problem multiple times when it has to backtrack\&. They are the main reason why a sat solver is faster then other dependency solver implementations\&.
+These rules are generated by the solver to keep it from running into the same problem multiple times when it has to backtrack\&. They are the main reason why a sat solver is faster than other dependency solver implementations\&.
 .RE
 .sp
 Special dependency rule types:
@@ -4398,7 +4561,7 @@ This element installs a package with a different version keeping the other versi
 .PP
 \fBSOLVER_TRANSACTION_MULTIREINSTALL\fR
 .RS 4
-This element reinstalls a installed package keeping the other versions installed\&.
+This element reinstalls an installed package keeping the other versions installed\&.
 .RE
 .sp
 Transaction element types, active view
@@ -4420,7 +4583,7 @@ This element installs a newer version of an installed package\&.
 .PP
 \fBSOLVER_TRANSACTION_DOWNGRADE\fR
 .RS 4
-This element installs a older version of an installed package\&.
+This element installs an older version of an installed package\&.
 .RE
 .PP
 \fBSOLVER_TRANSACTION_OBSOLETES\fR
@@ -4566,7 +4729,7 @@ my \fI@newsolvables\fR \fB=\fR \fI$trans\fR\fB\->newsolvables()\fR;
 .RE
 .\}
 .sp
-Return all packages that are to be installed by the transaction\&. This are the packages that need to be downloaded from the repositories\&.
+Return all packages that are to be installed by the transaction\&. These are the packages that need to be downloaded from the repositories\&.
 .sp
 .if n \{\
 .RS 4
@@ -4690,10 +4853,10 @@ Return the size change of the installed system in kilobytes (kibibytes)\&.
 .RE
 .\}
 .sp
-Order the steps in the transactions so that dependant packages are updated before packages that depend on them\&. For rpm, you can also use rpmlib\(cqs ordering functionality, debian\(cqs dpkg does not provide a way to order a transaction\&.
+Order the steps in the transactions so that dependent packages are updated before packages that depend on them\&. For rpm, you can also use rpmlib\(cqs ordering functionality, debian\(cqs dpkg does not provide a way to order a transaction\&.
 .SS "ACTIVE/PASSIVE VIEW"
 .sp
-Active view list what new packages get installed, while passive view shows what happens to the installed packages\&. Most often there\(cqs not much difference between the two modes, but things get interesting of multiple package get replaced by one new package\&. Say you have installed package A\-1\-1 and B\-1\-1, and now install A\-2\-1 with has a new dependency that obsoletes B\&. The transaction elements will be
+Active view lists what new packages get installed, while passive view shows what happens to the installed packages\&. Most often there\(cqs not much difference between the two modes, but things get interesting if multiple packages get replaced by one new package\&. Say you have installed packages A\-1\-1 and B\-1\-1, and now install A\-2\-1 which has a new dependency that obsoletes B\&. The transaction elements will be
 .sp
 .if n \{\
 .RS 4
@@ -4892,7 +5055,22 @@ my \fI$chksum\fR \fB= solv::Chksum\->new(\fR\fI$type\fR\fB,\fR \fI$hex\fR\fB)\fR
 .RE
 .\}
 .sp
-Create an already finalized checksum object\&.
+Create an already finalized checksum object from a hex string\&.
+.sp
+.if n \{\
+.RS 4
+.\}
+.nf
+\fBChksum Chksum_from_bin(Id\fR \fItype\fR\fB, char *\fR\fIbin\fR\fB)\fR
+my \fI$chksum\fR \fB= solv::Chksum\->from_bin(\fR\fI$type\fR\fB,\fR \fI$bin\fR\fB)\fR;
+\fIchksum\fR \fB= solv\&.Chksum\&.from_bin(\fR\fItype\fR\fB,\fR \fIbin\fR\fB)\fR
+\fIchksum\fR \fB= Solv::Chksum\&.from_bin(\fR\fItype\fR\fB,\fR \fIbin\fR\fB)\fR
+.fi
+.if n \{\
+.RE
+.\}
+.sp
+Create an already finalized checksum object from a binary checksum\&.
 .SS "ATTRIBUTES"
 .sp
 .if n \{\
@@ -4924,7 +5102,7 @@ Return the type of the checksum object\&.
 .RE
 .\}
 .sp
-Add a string to the checksum\&.
+Add a (binary) string to the checksum\&.
 .sp
 .if n \{\
 .RS 4
@@ -5077,7 +5255,7 @@ my \fI$file\fR \fB= solv::xfopen_fd(\fR\fI$path\fR\fB,\fR \fI$fileno\fR\fB)\fR;
 .RE
 .\}
 .sp
-Create a file handle from the specified file descriptor\&. The path argument is only used to select the correct (de\-)compression algorithm, use an empty path if you want to make sure to read/write raw data\&.
+Create a file handle from the specified file descriptor\&. The path argument is only used to select the correct (de\-)compression algorithm, use an empty path if you want to make sure to read/write raw data\&. The file descriptor is dup()ed before the file handle is created\&.
 .SS "METHODS"
 .sp
 .if n \{\
@@ -5094,6 +5272,21 @@ my \fI$fileno\fR \fB=\fR \fI$file\fR\fB\->fileno()\fR;
 .\}
 .sp
 Return file file descriptor of the file\&. If the file is not open, \-1 is returned\&.
+.sp
+.if n \{\
+.RS 4
+.\}
+.nf
+\fBvoid cloexec(bool\fR \fIstate\fR\fB)\fR
+\fI$file\fR\fB\->cloexec(\fR\fI$state\fR\fB)\fR
+\fIfile\fR\fB\&.cloexec(\fR\fIstate\fR\fB)\fR
+\fIfile\fR\fB\&.cloexec(\fR\fIstate\fR\fB)\fR
+.fi
+.if n \{\
+.RE
+.\}
+.sp
+Set the close\-on\-exec flag of the file descriptor\&. The xfopen function returns files with close\-on\-exec turned on, so if you want to pass a file to some other process you need to call cloexec(0) before calling exec\&.
 .sp
 .if n \{\
 .RS 4
@@ -5138,7 +5331,7 @@ Flush the file\&. Returns false if there was an error\&. Flushing a closed file 
 .RE
 .\}
 .sp
-Close the file\&. This is needed for languages like Ruby, that do not destruct objects right after they are no longer referenced\&. In that case, it is good style to close open files so that the file descriptors are freed right away\&. Returns false if there was an error\&.
+Close the file\&. This is needed for languages like Ruby that do not destruct objects right after they are no longer referenced\&. In that case, it is good style to close open files so that the file descriptors are freed right away\&. Returns false if there was an error\&.
 .SH "THE REPODATA CLASS"
 .sp
 The Repodata stores attributes for packages and the repository itself, each repository can have multiple repodata areas\&. You normally only need to directly access them if you implement lazy downloading of repository data\&. Repodata areas are created by calling the repository\(cqs add_repodata() method or by using repo_add methods without the REPO_REUSE_REPODATA or REPO_USE_LOADING flag\&.
