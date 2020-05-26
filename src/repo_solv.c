@@ -223,7 +223,7 @@ data_read_idarray(unsigned char *dp, Id **storep, Id *map, int max, Repodata *da
 	  data->error = SOLV_ERROR_ID_RANGE;
 	  break;
 	}
-      *store++ = x;
+      *store++ = map ? map[x] : x;
       if ((c & 64) == 0)
         break;
       x = 0;
@@ -478,7 +478,7 @@ repo_add_solv(Repo *repo, FILE *fp, int flags)
   int oldnstrings = pool->ss.nstrings;
   int oldnrels = pool->nrels;
 
-  struct _Stringpool *spool;
+  struct s_Stringpool *spool;
 
   Repodata *parent = 0;
   Repodata data;
@@ -612,7 +612,7 @@ repo_add_solv(Repo *repo, FILE *fp, int flags)
       unsigned int pfsize = read_u32(&data);
       char *prefix = solv_malloc(pfsize);
       char *pp = prefix;
-      char *old_str = 0;
+      char *old_str = strsp;
       char *dest = strsp;
       int freesp = sizeid;
 
@@ -682,35 +682,16 @@ repo_add_solv(Repo *repo, FILE *fp, int flags)
       /* alloc id map for name and rel Ids. this maps ids in the solv files
        * to the ids in our pool */
       idmap = solv_calloc(numid + numrel, sizeof(Id));
-
-      /* grow hash if needed, otherwise reuse */
-      hashmask = mkmask(spool->nstrings + numid);
+      stringpool_resize_hash(spool, numid);
+      hashtbl = spool->stringhashtbl;
+      hashmask = spool->stringhashmask;
 #if 0
       POOL_DEBUG(SOLV_DEBUG_STATS, "read %d strings\n", numid);
-      POOL_DEBUG(SOLV_DEBUG_STATS, "string hash buckets: %d, old %d\n", hashmask + 1, spool->stringhashmask + 1);
+      POOL_DEBUG(SOLV_DEBUG_STATS, "string hash buckets: %d\n", hashmask + 1);
 #endif
-      if (hashmask > spool->stringhashmask)
-	{
-	  spool->stringhashtbl = solv_free(spool->stringhashtbl);
-	  spool->stringhashmask = hashmask;
-          spool->stringhashtbl = hashtbl = solv_calloc(hashmask + 1, sizeof(Id));
-	  for (i = 1; i < spool->nstrings; i++)
-	    {
-	      h = strhash(spool->stringspace + spool->strings[i]) & hashmask;
-	      hh = HASHCHAIN_START;
-	      while (hashtbl[h])
-		h = HASHCHAIN_NEXT(h, hh, hashmask);
-	      hashtbl[h] = i;
-	    }
-	}
-      else
-	{
-	  hashtbl = spool->stringhashtbl;
-	  hashmask = spool->stringhashmask;
-	}
-
       /*
        * run over strings and merge with pool.
+       * we could use stringpool_str2id, but this is faster.
        * also populate id map (maps solv Id -> pool Id)
        */
       for (i = 1; i < numid; i++)
@@ -758,11 +739,6 @@ repo_add_solv(Repo *repo, FILE *fp, int flags)
 	  idmap[i] = id;       /* repo relative -> pool relative */
 	  sp += l;	       /* next string */
 	}
-      if (hashmask > mkmask(spool->nstrings + 8192))
-	{
-	  spool->stringhashtbl = solv_free(spool->stringhashtbl);
-	  spool->stringhashmask = 0;
-	}
       stringpool_shrink(spool);		/* vacuum */
     }
 
@@ -780,31 +756,13 @@ repo_add_solv(Repo *repo, FILE *fp, int flags)
       pool->rels = solv_realloc2(pool->rels, pool->nrels + numrel, sizeof(Reldep));
       ran = pool->rels;
 
-      /* grow hash if needed, otherwise reuse */
-      hashmask = mkmask(pool->nrels + numrel);
+      pool_resize_rels_hash(pool, numrel);
+      hashtbl = pool->relhashtbl;
+      hashmask = pool->relhashmask;
 #if 0
       POOL_DEBUG(SOLV_DEBUG_STATS, "read %d rels\n", numrel);
-      POOL_DEBUG(SOLV_DEBUG_STATS, "rel hash buckets: %d, old %d\n", hashmask + 1, pool->relhashmask + 1);
+      POOL_DEBUG(SOLV_DEBUG_STATS, "rel hash buckets: %d\n", hashmask + 1);
 #endif
-      if (hashmask > pool->relhashmask)
-	{
-	  pool->relhashtbl = solv_free(pool->relhashtbl);
-	  pool->relhashmask = hashmask;
-          pool->relhashtbl = hashtbl = solv_calloc(hashmask + 1, sizeof(Id));
-	  for (i = 1; i < pool->nrels; i++)
-	    {
-	      h = relhash(ran[i].name, ran[i].evr, ran[i].flags) & hashmask;
-	      hh = HASHCHAIN_START;
-	      while (hashtbl[h])
-		h = HASHCHAIN_NEXT(h, hh, hashmask);
-	      hashtbl[h] = i;
-	    }
-	}
-      else
-	{
-	  hashtbl = pool->relhashtbl;
-	  hashmask = pool->relhashmask;
-	}
 
       /*
        * read RelDeps from repo
@@ -836,11 +794,6 @@ repo_add_solv(Repo *repo, FILE *fp, int flags)
 	      ran[id].flags = relflags;
 	    }
 	  idmap[i + numid] = MAKERELDEP(id);   /* fill Id map */
-	}
-      if (hashmask > mkmask(pool->nrels + 4096))
-	{
-	  pool->relhashtbl = solv_free(pool->relhashtbl);
-	  pool->relhashmask = 0;
 	}
       pool_shrink_rels(pool);		/* vacuum */
     }
@@ -906,7 +859,7 @@ repo_add_solv(Repo *repo, FILE *fp, int flags)
 	type = idmap[type];
       else if ((flags & REPO_LOCALPOOL) != 0)
         type = pool_str2id(pool, stringpool_id2str(spool, type), 1);
-      if (type < REPOKEY_TYPE_VOID || type > REPOKEY_TYPE_FLEXARRAY)
+      if (type < REPOKEY_TYPE_VOID || type > REPOKEY_TYPE_DELETED)
 	{
 	  data.error = pool_error(pool, SOLV_ERROR_UNSUPPORTED, "unsupported data type '%s'", pool_id2str(pool, type));
 	  type = REPOKEY_TYPE_VOID;
@@ -926,6 +879,8 @@ repo_add_solv(Repo *repo, FILE *fp, int flags)
 	    data.error = pool_error(pool, SOLV_ERROR_UNSUPPORTED, "main solvable data must use incore storage %d", keys[i].storage);
 	  keys[i].storage = KEY_STORAGE_SOLVABLE;
 	}
+      if ((type == REPOKEY_TYPE_FIXARRAY || type == REPOKEY_TYPE_FLEXARRAY) && keys[i].storage != KEY_STORAGE_INCORE)
+	data.error = pool_error(pool, SOLV_ERROR_UNSUPPORTED, "flex/fixarrays must use incore storage\n");
       /* cannot handle rel idarrays in incore/vertical */
       if (type == REPOKEY_TYPE_REL_IDARRAY && keys[i].storage != KEY_STORAGE_SOLVABLE)
 	data.error = pool_error(pool, SOLV_ERROR_UNSUPPORTED, "type REL_IDARRAY is only supported for STORAGE_SOLVABLE");
@@ -1263,12 +1218,9 @@ printf("=> %s %s %p\n", pool_id2str(pool, keys[key].name), pool_id2str(pool, key
 	    }
 	  /* FALLTHROUGH */
 	default:
-	  if (id == RPM_RPMDBID && s && (keys[key].type == REPOKEY_TYPE_U32 || keys[key].type == REPOKEY_TYPE_NUM))
+	  if (id == RPM_RPMDBID && s && keys[key].type == REPOKEY_TYPE_NUM)
 	    {
-	      if (keys[key].type == REPOKEY_TYPE_U32)
-	        dp = data_read_u32(dp, (unsigned int *)&id);
-	      else
-	        dp = data_read_id_max(dp, &id, 0, 0, &data);
+	      dp = data_read_id(dp, &id);
 	      if (!repo->rpmdbid)
 		repo->rpmdbid = repo_sidedata_create(repo, sizeof(Id));
 	      repo->rpmdbid[(s - pool->solvables) - repo->start] = id;
@@ -1317,7 +1269,7 @@ printf("=> %s %s %p\n", pool_id2str(pool, keys[key].name), pool_id2str(pool, key
       keys[i].type = REPOKEY_TYPE_IDARRAY;
 
   for (i = 1; i < numkeys; i++)
-    if (keys[i].storage == KEY_STORAGE_VERTICAL_OFFSET)
+    if (keys[i].storage == KEY_STORAGE_VERTICAL_OFFSET && keys[i].size)
       break;
   if (i < numkeys && !data.error)
     {
@@ -1357,6 +1309,7 @@ printf("=> %s %s %p\n", pool_id2str(pool, keys[key].name), pool_id2str(pool, key
       /* overwrite stub repodata */
       repodata_freedata(parent);
       data.repodataid = parent->repodataid;
+      data.loadcallback = parent->loadcallback;
       *parent = data;
     }
   else
@@ -1373,6 +1326,17 @@ printf("=> %s %s %p\n", pool_id2str(pool, keys[key].name), pool_id2str(pool, key
       repo->repodata[repo->nrepodata++] = data;
     }
 
+  if ((flags & REPO_EXTEND_SOLVABLES) != 0)
+    {
+      if (repodata_has_keyname(&data, SOLVABLE_FILELIST))
+	repodata_set_filelisttype(repo->repodata + data.repodataid, REPODATA_FILELIST_EXTENSION);
+    }
+  else
+    {
+      if (repodata_lookup_type(&data, SOLVID_META, REPOSITORY_FILTEREDFILELIST))
+        repodata_set_filelisttype(repo->repodata + data.repodataid, REPODATA_FILELIST_FILTERED);
+    }
+
   /* create stub repodata entries for all external */
   if (!(flags & SOLV_ADD_NO_STUBS) && !parent)
     {
@@ -1380,7 +1344,7 @@ printf("=> %s %s %p\n", pool_id2str(pool, keys[key].name), pool_id2str(pool, key
 	if (data.keys[key].name == REPOSITORY_EXTERNAL && data.keys[key].type == REPOKEY_TYPE_FLEXARRAY)
 	  break;
       if (key < data.nkeys)
-	repodata_create_stubs(repo->repodata + (repo->nrepodata - 1));
+	repodata_create_stubs(repo->repodata + data.repodataid);
     }
 
   POOL_DEBUG(SOLV_DEBUG_STATS, "repo_add_solv took %d ms\n", solv_timems(now));

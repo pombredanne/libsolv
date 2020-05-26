@@ -33,13 +33,17 @@ static const char *archpolicies[] = {
   "ppc64",	"ppc64:ppc",
   "ppc64p7",	"ppc64p7:ppc64:ppc",
   "ia64",	"ia64:i686:i586:i486:i386",
+  "armv8hcnl",	"armv8hcnl:armv8hnl:armv8hl:armv7hnl:armv7hl:armv6hl",
+  "armv8hnl",	"armv8hnl:armv8hl:armv7hnl:armv7hl:armv6hl",
+  "armv8hl",	"armv8hl:armv7hl:armv6hl",
+  "armv8l",	"armv8l:armv7l:armv6l:armv5tejl:armv5tel:armv5tl:armv5l:armv4tl:armv4l:armv3l",
   "armv7hnl",	"armv7hnl:armv7hl:armv6hl",
   "armv7hl",	"armv7hl:armv6hl",
-  "armv7l",	"armv7l:armv6l:armv5tejl:armv5tel:armv5l:armv4tl:armv4l:armv3l",
-  "armv6l",	"armv6l:armv5tejl:armv5tel:armv5l:armv4tl:armv4l:armv3l",
-  "armv5tejl",	"armv5tejl:armv5tel:armv5l:armv4tl:armv4l:armv3l",
-  "armv5tel",	"armv5tel:armv5l:armv4tl:armv4l:armv3l",
-  "armv5tl",	"armv5l:armv4tl:armv4l:armv3l",
+  "armv7l",	"armv7l:armv6l:armv5tejl:armv5tel:armv5tl:armv5l:armv4tl:armv4l:armv3l",
+  "armv6l",	"armv6l:armv5tejl:armv5tel:armv5tl:armv5l:armv4tl:armv4l:armv3l",
+  "armv5tejl",	"armv5tejl:armv5tel:armv5tl:armv5l:armv4tl:armv4l:armv3l",
+  "armv5tel",	"armv5tel:armv5tl:armv5l:armv4tl:armv4l:armv3l",
+  "armv5tl",	"armv5tl:armv5l:armv4tl:armv4l:armv3l",
   "armv5l",	"armv5l:armv4tl:armv4l:armv3l",
   "armv4tl",	"armv4tl:armv4l:armv3l",
   "armv4l",	"armv4l:armv3l",
@@ -104,6 +108,9 @@ pool_setarchpolicy(Pool *pool, const char *arch)
     }
   id = pool->noarchid;
   lastarch = id + 255;
+  /* note that we overallocate one element to be compatible with
+   * old versions that accessed id2arch[lastarch].
+   * id2arch[lastarch] will always be zero */
   id2arch = solv_calloc(lastarch + 1, sizeof(Id));
   id2arch[id] = 1;	/* the "noarch" class */
 
@@ -114,7 +121,7 @@ pool_setarchpolicy(Pool *pool, const char *arch)
       if (l)
 	{
 	  id = pool_strn2id(pool, arch, l, 1);
-	  if (id > lastarch)
+	  if (id >= lastarch)
 	    {
 	      id2arch = solv_realloc2(id2arch, (id + 255 + 1), sizeof(Id));
 	      memset(id2arch + lastarch + 1, 0, (id + 255 - lastarch) * sizeof(Id));
@@ -143,7 +150,7 @@ pool_arch2color_slow(Pool *pool, Id arch)
   const char *s;
   unsigned char color;
 
-  if (arch > pool->lastarch)
+  if ((unsigned int)arch >= (unsigned int)pool->lastarch)
     return ARCHCOLOR_ALL;
   if (!pool->id2color)
     pool->id2color = solv_calloc(pool->lastarch + 1, 1);

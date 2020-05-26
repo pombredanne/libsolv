@@ -12,6 +12,7 @@
 #define ADD_WITH_SUBKEYS		(1 << 9)
 #define ADD_MULTIPLE_PUBKEYS		(1 << 10)
 #define ADD_WITH_KEYSIGNATURES		(1 << 11)
+#define USE_RPM_PUBKEY_BUILTTIME	(1 << 12)
 
 extern int repo_add_rpmdb_pubkeys(Repo *repo, int flags);
 extern Id repo_add_pubkey(Repo *repo, const char *keyfile, int flags);
@@ -19,7 +20,7 @@ extern int repo_add_keyring(Repo *repo, FILE *fp, int flags);
 extern int repo_add_keydir(Repo *repo, const char *keydir, const char *suffix, int flags);
 
 /* signature parsing */
-typedef struct _solvsig {
+typedef struct s_Solvsig {
   unsigned char *sigpkt;
   int sigpktl;
   Id htype;

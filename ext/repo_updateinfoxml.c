@@ -37,6 +37,7 @@
  *     <pkglist>
  *       <collection short="F8">
  *         <name>Fedora 8</name>
+ *         <module name="pki-deps" stream="10.6" version="20181019123559" context="9edba152" arch="x86_64"/>
  *         <package arch="ppc64" name="imlib-debuginfo" release="6.fc8" src="http://download.fedoraproject.org/pub/fedora/linux/updates/8/ppc64/imlib-debuginfo-1.9.15-6.fc8.ppc64.rpm" version="1.9.15">
  *           <filename>imlib-debuginfo-1.9.15-6.fc8.ppc64.rpm</filename>
  *           <reboot_suggested>True</reboot_suggested>
@@ -70,6 +71,7 @@ enum state {
   STATE_RELOGIN,
   STATE_RIGHTS,
   STATE_SEVERITY,
+  STATE_MODULE,
   NUMSTATES
 };
 
@@ -92,6 +94,7 @@ static struct solv_xmlparser_element stateswitches[] = {
   { STATE_PKGLIST,     "collection",      STATE_COLLECTION,  0 },
   { STATE_COLLECTION,  "name",            STATE_NAME,        1 },
   { STATE_COLLECTION,  "package",         STATE_PACKAGE,     0 },
+  { STATE_COLLECTION,  "module",          STATE_MODULE,      0 },
   { STATE_PACKAGE,     "filename",        STATE_FILENAME,    1 },
   { STATE_PACKAGE,     "reboot_suggested",STATE_REBOOT,      1 },
   { STATE_PACKAGE,     "restart_suggested",STATE_RESTART,    1 },
@@ -217,7 +220,7 @@ startElement(struct solv_xmlparser *xmlp, int state, const char *name, const cha
        */
     case STATE_UPDATE:
       {
-	const char *from = 0, *type = 0, *version = 0;
+	const char *from = 0, *type = 0, *version = 0, *status = 0;
 	for (; *atts; atts += 2)
 	  {
 	    if (!strcmp(*atts, "from"))
@@ -226,6 +229,8 @@ startElement(struct solv_xmlparser *xmlp, int state, const char *name, const cha
 	      type = atts[1];
 	    else if (!strcmp(*atts, "version"))
 	      version = atts[1];
+	    else if (!strcmp(*atts, "status"))
+	      status = atts[1];
 	  }
 	solvable = pd->solvable = pool_id2solvable(pool, repo_add_solvable(pd->repo));
 	pd->handle = pd->solvable - pool->solvables;
@@ -235,6 +240,8 @@ startElement(struct solv_xmlparser *xmlp, int state, const char *name, const cha
 	solvable->arch = ARCH_NOARCH;
 	if (type)
 	  repodata_set_str(pd->data, pd->handle, SOLVABLE_PATCHCATEGORY, type);
+	if (status)
+	  repodata_set_poolstr(pd->data, pd->handle, UPDATE_STATUS, status);
         pd->buildtime = (time_t)0;
       }
       break;
@@ -291,8 +298,7 @@ startElement(struct solv_xmlparser *xmlp, int state, const char *name, const cha
       {
 	const char *arch = 0, *name = 0;
 	Id evr = makeevr_atts(pool, pd, atts); /* parse "epoch", "version", "release" */
-	Id n, a = 0;
-	Id rel_id;
+	Id n, a, id;
 
 	for (; *atts; atts += 2)
 	  {
@@ -301,17 +307,24 @@ startElement(struct solv_xmlparser *xmlp, int state, const char *name, const cha
 	    else if (!strcmp(*atts, "name"))
 	      name = atts[1];
 	  }
-	/* generated Id for name */
-	n = pool_str2id(pool, name, 1);
-	rel_id = n;
-	if (arch)
+	n = name ? pool_str2id(pool, name, 1) : 0;
+	a = arch ? pool_str2id(pool, arch, 1) : 0;
+
+	/* generated conflicts for the package */
+	if (a && a != ARCH_NOARCH)
 	  {
-	    /*  generate Id for arch and combine with name */
-	    a = pool_str2id(pool, arch, 1);
-	    rel_id = pool_rel2id(pool, n, a, REL_ARCH, 1);
+	    id = pool_rel2id(pool, n, a, REL_ARCH, 1);
+	    id = pool_rel2id(pool, id, evr, REL_LT, 1);
+	    solvable->conflicts = repo_addid_dep(pd->repo, solvable->conflicts, id, 0);
+	    id = pool_rel2id(pool, n, ARCH_NOARCH, REL_ARCH, 1);
+	    id = pool_rel2id(pool, id, evr, REL_LT, 1);
+	    solvable->conflicts = repo_addid_dep(pd->repo, solvable->conflicts, id, 0);
 	  }
-	rel_id = pool_rel2id(pool, rel_id, evr, REL_LT, 1);
-	solvable->conflicts = repo_addid_dep(pd->repo, solvable->conflicts, rel_id, 0);
+	else
+	  {
+	    id = pool_rel2id(pool, n, evr, REL_LT, 1);
+	    solvable->conflicts = repo_addid_dep(pd->repo, solvable->conflicts, id, 0);
+	  }
 
         /* who needs the collection anyway? */
         pd->collhandle = repodata_new_handle(pd->data);
@@ -319,6 +332,38 @@ startElement(struct solv_xmlparser *xmlp, int state, const char *name, const cha
 	repodata_set_id(pd->data, pd->collhandle, UPDATE_COLLECTION_EVR, evr);
 	if (a)
 	  repodata_set_id(pd->data, pd->collhandle, UPDATE_COLLECTION_ARCH, a);
+        break;
+      }
+    case STATE_MODULE:
+      {
+        const char *name = 0, *stream = 0, *version = 0, *context = 0, *arch = 0;
+        Id module_handle;
+
+        for (; *atts; atts += 2)
+          {
+            if (!strcmp(*atts, "arch"))
+              arch = atts[1];
+            else if (!strcmp(*atts, "name"))
+              name = atts[1];
+            else if (!strcmp(*atts, "stream"))
+              stream = atts[1];
+            else if (!strcmp(*atts, "version"))
+              version = atts[1];
+            else if (!strcmp(*atts, "context"))
+              context = atts[1];
+          }
+        module_handle = repodata_new_handle(pd->data);
+	if (name)
+          repodata_set_poolstr(pd->data, module_handle, UPDATE_MODULE_NAME, name);
+	if (stream)
+          repodata_set_poolstr(pd->data, module_handle, UPDATE_MODULE_STREAM, stream);
+	if (version)
+          repodata_set_poolstr(pd->data, module_handle, UPDATE_MODULE_VERSION, version);
+	if (context)
+          repodata_set_poolstr(pd->data, module_handle, UPDATE_MODULE_CONTEXT, context);
+        if (arch)
+          repodata_set_poolstr(pd->data, module_handle, UPDATE_MODULE_ARCH, arch);
+        repodata_add_flexarray(pd->data, pd->handle, UPDATE_MODULE, module_handle);
         break;
       }
 
@@ -427,13 +472,6 @@ endElement(struct solv_xmlparser *xmlp, int state, char *content)
     }
 }
 
-static void
-errorCallback(struct solv_xmlparser *xmlp, const char *errstr, unsigned int line, unsigned int column)
-{
-  struct parsedata *pd = xmlp->userdata;
-  pd->ret = pool_error(pd->pool, -1, "repo_updateinfoxml: %s at line %u:%u", errstr, line, column);
-}
-
 int
 repo_add_updateinfoxml(Repo *repo, FILE *fp, int flags)
 {
@@ -447,8 +485,9 @@ repo_add_updateinfoxml(Repo *repo, FILE *fp, int flags)
   pd.pool = pool;
   pd.repo = repo;
   pd.data = data;
-  solv_xmlparser_init(&pd.xmlp, stateswitches, &pd, startElement, endElement, errorCallback);
-  solv_xmlparser_parse(&pd.xmlp, fp);
+  solv_xmlparser_init(&pd.xmlp, stateswitches, &pd, startElement, endElement);
+  if (solv_xmlparser_parse(&pd.xmlp, fp) != SOLV_XMLPARSER_OK)
+    pd.ret = pool_error(pool, -1, "repo_updateinfoxml: %s at line %u:%u", pd.xmlp.errstr, pd.xmlp.line, pd.xmlp.column);
   solv_xmlparser_free(&pd.xmlp);
   join_freemem(&pd.jd);
 
@@ -457,3 +496,92 @@ repo_add_updateinfoxml(Repo *repo, FILE *fp, int flags)
   return pd.ret;
 }
 
+#ifdef SUSE
+
+static int
+repo_mark_retracted_packages_cmp(const void *ap, const void *bp, void *dp)
+{
+  Id *a = (Id *)ap;
+  Id *b = (Id *)bp;
+  if (a[1] != b[1])
+    return a[1] - b[1];
+  if (a[2] != b[2])
+    return a[2] - b[2];
+  if (a[0] != b[0])
+    return a[0] - b[0];
+  return 0;
+}
+
+
+void
+repo_mark_retracted_packages(Repo *repo, Id retractedmarker)
+{
+  Pool *pool = repo->pool;
+  int i, p;
+  Solvable *s;
+  Id con, *conp;
+  Id retractedname, retractedevr;
+
+  Queue q;
+  queue_init(&q);
+  FOR_REPO_SOLVABLES(repo, p, s)
+    {
+      const char *status;
+      s = pool->solvables + p;
+      if (strncmp(pool_id2str(pool, s->name), "patch:", 6) != 0)
+	{
+	  if (s->arch == ARCH_SRC || s->arch == ARCH_NOSRC)
+	    continue;
+	  queue_push2(&q, p, s->name);
+	  queue_push2(&q, s->evr, s->arch);
+	  continue;
+	}
+      status = solvable_lookup_str(s, UPDATE_STATUS);
+      if (!status || strcmp(status, "retracted") != 0)
+	continue;
+      if (!s->conflicts)
+	continue;
+      conp = s->repo->idarraydata + s->conflicts;
+      while ((con = *conp++) != 0)
+	{
+	  Reldep *rd;
+	  Id name, evr, arch;
+	  if (!ISRELDEP(con))
+	    continue;
+	  rd = GETRELDEP(pool, con);
+	  if (rd->flags != REL_LT)
+	    continue;
+	  name = rd->name;
+	  evr = rd->evr;
+	  arch = 0;
+	  if (ISRELDEP(name))
+	    {
+	      rd = GETRELDEP(pool, name);
+	      name = rd->name;
+	      if (rd->flags == REL_ARCH)
+		arch = rd->evr;
+	    }
+	  queue_push2(&q, 0, name);
+	  queue_push2(&q, evr, arch);
+	}
+    }
+  if (q.count)
+    solv_sort(q.elements, q.count / 4, sizeof(Id) * 4, repo_mark_retracted_packages_cmp, repo->pool);
+  retractedname = retractedevr = 0;
+  for (i = 0; i < q.count; i += 4)
+    {
+      if (!q.elements[i])
+	{
+	  retractedname = q.elements[i + 1];
+	  retractedevr = q.elements[i + 2];
+	}
+      else if (q.elements[i + 1] == retractedname && q.elements[i + 2] == retractedevr)
+	{
+	  s = pool->solvables + q.elements[i];
+	  s->provides = repo_addid_dep(s->repo, s->provides, retractedmarker, 0);
+	}
+    }
+  queue_free(&q);
+}
+
+#endif

@@ -34,10 +34,10 @@ extern "C" {
 #define SIZEOF_SHA384	48
 #define SIZEOF_SHA512	64
 
-struct _Repo;
-struct _KeyValue;
+struct s_Repo;
+struct s_KeyValue;
 
-typedef struct _Repokey {
+typedef struct s_Repokey {
   Id name;
   Id type;			/* REPOKEY_TYPE_xxx */
   unsigned int size;
@@ -53,19 +53,26 @@ typedef struct _Repokey {
 struct dircache;
 #endif
 
-typedef struct _Repodata {
-  Id repodataid;		/* our id */
-  struct _Repo *repo;		/* back pointer to repo */
-
+/* repodata states */
 #define REPODATA_AVAILABLE	0
 #define REPODATA_STUB		1
 #define REPODATA_ERROR		2
 #define REPODATA_STORE		3
 #define REPODATA_LOADING	4
 
+/* repodata filelist types */
+/* note that FILELIST_FILTERED means that the data contains a filtered
+ * filelist *AND* that it is authoritative for all included solvables. */
+#define REPODATA_FILELIST_FILTERED	1
+#define REPODATA_FILELIST_EXTENSION	2
+
+typedef struct s_Repodata {
+  Id repodataid;		/* our id */
+  struct s_Repo *repo;		/* back pointer to repo */
+
   int state;			/* available, stub or error */
 
-  void (*loadcallback)(struct _Repodata *);
+  void (*loadcallback)(struct s_Repodata *);
 
   int start;			/* start of solvables this repodata is valid for */
   int end;			/* last solvable + 1 of this repodata */
@@ -86,6 +93,10 @@ typedef struct _Repodata {
 #ifdef LIBSOLV_INTERNAL
   FILE *fp;			/* file pointer of solv file */
   int error;			/* corrupt solv file */
+
+  int filelisttype;		/* type of filelist */
+  Id *filelistfilter;		/* filelist filter used */
+  char *filelistfilterdata;	/* filelist filter string space */
 
   unsigned int schemadatalen;   /* schema storage size */
   Id *schematahash;		/* unification helper */
@@ -132,18 +143,18 @@ typedef struct _Repodata {
 
 #define SOLVID_META		-1
 #define SOLVID_POS		-2
-#define SOLVID_SUBSCHEMA	-3		/* internal! */
 
 
 /*-----
  * management functions
  */
-void repodata_initdata(Repodata *data, struct _Repo *repo, int localpool);
+void repodata_initdata(Repodata *data, struct s_Repo *repo, int localpool);
 void repodata_freedata(Repodata *data);
 
 void repodata_free(Repodata *data);
 void repodata_empty(Repodata *data, int localpool);
 
+void repodata_load(Repodata *data);
 
 /*
  * key management functions
@@ -196,25 +207,35 @@ repodata_has_keyname(Repodata *data, Id keyname)
 
 /* search key <keyname> (all keys, if keyname == 0) for Id <solvid>
  * Call <callback> for each match */
-void repodata_search(Repodata *data, Id solvid, Id keyname, int flags, int (*callback)(void *cbdata, Solvable *s, Repodata *data, Repokey *key, struct _KeyValue *kv), void *cbdata);
+void repodata_search(Repodata *data, Id solvid, Id keyname, int flags, int (*callback)(void *cbdata, Solvable *s, Repodata *data, Repokey *key, struct s_KeyValue *kv), void *cbdata);
+void repodata_search_keyskip(Repodata *data, Id solvid, Id keyname, int flags, Id *keyskip, int (*callback)(void *cbdata, Solvable *s, Repodata *data, Repokey *key, struct s_KeyValue *kv), void *cbdata);
+void repodata_search_arrayelement(Repodata *data, Id solvid, Id keyname, int flags, struct s_KeyValue *kv, int (*callback)(void *cbdata, Solvable *s, Repodata *data, Repokey *key, struct s_KeyValue *kv), void *cbdata);
 
 /* Make sure the found KeyValue has the "str" field set. Return "str"
  * if valid, NULL if not possible */
-const char *repodata_stringify(Pool *pool, Repodata *data, Repokey *key, struct _KeyValue *kv, int flags);
+const char *repodata_stringify(Pool *pool, Repodata *data, Repokey *key, struct s_KeyValue *kv, int flags);
 
+/* filelist filter support */
+void repodata_set_filelisttype(Repodata *data, int filelisttype);
 int repodata_filelistfilter_matches(Repodata *data, const char *str);
-
+void repodata_free_filelistfilter(Repodata *data);
 
 /* lookup functions */
 Id repodata_lookup_type(Repodata *data, Id solvid, Id keyname);
 Id repodata_lookup_id(Repodata *data, Id solvid, Id keyname);
 const char *repodata_lookup_str(Repodata *data, Id solvid, Id keyname);
-int repodata_lookup_num(Repodata *data, Id solvid, Id keyname, unsigned long long *value);
+unsigned long long repodata_lookup_num(Repodata *data, Id solvid, Id keyname, unsigned long long notfound);
 int repodata_lookup_void(Repodata *data, Id solvid, Id keyname);
 const unsigned char *repodata_lookup_bin_checksum(Repodata *data, Id solvid, Id keyname, Id *typep);
 int repodata_lookup_idarray(Repodata *data, Id solvid, Id keyname, Queue *q);
 const void *repodata_lookup_binary(Repodata *data, Id solvid, Id keyname, int *lenp);
+unsigned int repodata_lookup_count(Repodata *data, Id solvid, Id keyname);	/* internal */
 
+/* internal, used in fileprovides code */
+const unsigned char *repodata_lookup_packed_dirstrarray(Repodata *data, Id solvid, Id keyname);
+
+/* internal, fill keyskip array with data */
+Id *repodata_fill_keyskip(Repodata *data, Id solvid, Id *keyskip);
 
 /*-----
  * data assignment functions
@@ -258,19 +279,20 @@ void repodata_set_checksum(Repodata *data, Id solvid, Id keyname, Id type,
 			   const char *str);
 void repodata_set_idarray(Repodata *data, Id solvid, Id keyname, Queue *q);
 
-
 /* directory (for package file list) */
 void repodata_add_dirnumnum(Repodata *data, Id solvid, Id keyname, Id dir, Id num, Id num2);
 void repodata_add_dirstr(Repodata *data, Id solvid, Id keyname, Id dir, const char *str);
 void repodata_free_dircache(Repodata *data);
 
 
-/* Arrays */
+/* arrays */
 void repodata_add_idarray(Repodata *data, Id solvid, Id keyname, Id id);
 void repodata_add_poolstr_array(Repodata *data, Id solvid, Id keyname, const char *str);
 void repodata_add_fixarray(Repodata *data, Id solvid, Id keyname, Id ghandle);
 void repodata_add_flexarray(Repodata *data, Id solvid, Id keyname, Id ghandle);
 
+/* generic */
+void repodata_set_kv(Repodata *data, Id solvid, Id keyname, Id keytype, struct s_KeyValue *kv);
 void repodata_unset(Repodata *data, Id solvid, Id keyname);
 void repodata_unset_uninternalized(Repodata *data, Id solvid, Id keyname);
 
@@ -293,6 +315,7 @@ void repodata_disable_paging(Repodata *data);
 Id repodata_globalize_id(Repodata *data, Id id, int create);
 Id repodata_localize_id(Repodata *data, Id id, int create);
 Id repodata_translate_id(Repodata *data, Repodata *fromdata, Id id, int create);
+Id repodata_translate_dir_slow(Repodata *data, Repodata *fromdata, Id dir, int create, Id *cache);
 
 Id repodata_str2dir(Repodata *data, const char *dir, int create);
 const char *repodata_dir2str(Repodata *data, Id did, const char *suf);
@@ -301,13 +324,33 @@ void repodata_set_location(Repodata *data, Id solvid, int medianr, const char *d
 void repodata_set_deltalocation(Repodata *data, Id handle, int medianr, const char *dir, const char *file);
 void repodata_set_sourcepkg(Repodata *data, Id solvid, const char *sourcepkg);
 
-/* uninternalized data lookup */
-Id repodata_lookup_id_uninternalized(Repodata *data, Id solvid, Id keyname, Id voidid);
-const char *repodata_lookup_dirstrarray_uninternalized(Repodata *data, Id solvid, Id keyname, Id *didp, Id *iterp);
-const unsigned char *repodata_lookup_bin_checksum_uninternalized(Repodata *data, Id solvid, Id keyname, Id *typep);
+/* uninternalized data lookup / search */
+Repokey *repodata_lookup_kv_uninternalized(Repodata *data, Id solvid, Id keyname, struct s_KeyValue *kv);
+void repodata_search_uninternalized(Repodata *data, Id solvid, Id keyname, int flags, int (*callback)(void *cbdata, Solvable *s, Repodata *data, Repokey *key, struct s_KeyValue *kv), void *cbdata);
 
 /* stats */
 unsigned int repodata_memused(Repodata *data);
+
+static inline Id
+repodata_translate_dir(Repodata *data, Repodata *fromdata, Id dir, int create, Id *cache)
+{
+  if (cache && dir && cache[(dir & 255) * 2] == dir)
+    return cache[(dir & 255) * 2 + 1];
+  return repodata_translate_dir_slow(data, fromdata, dir, create, cache);
+}
+
+static inline Id *
+repodata_create_dirtranscache(Repodata *data)
+{
+  return (Id *)solv_calloc(256, sizeof(Id) * 2);
+}
+
+static inline Id *
+repodata_free_dirtranscache(Id *cache)
+{
+  return (Id *)solv_free(cache);
+}
+
 
 #ifdef __cplusplus
 }

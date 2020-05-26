@@ -256,6 +256,7 @@ sub add_ext {
 sub add_exts {
   my ($self) = @_;
   my $repodata = $self->{handle}->add_repodata(0);
+  $repodata->extend_to_repo();
   $self->add_ext($repodata, 'deltainfo', 'DL');
   $self->add_ext($repodata, 'filelists', 'FL');
   $repodata->internalize();
@@ -565,6 +566,7 @@ die("unknown command '$cmd'\n") unless defined $cmdactionmap{$cmd};
 
 $pool->addfileprovides();
 $pool->createwhatprovides();
+$pool->set_namespaceproviders($solv::NAMESPACE_LANGUAGE, $pool->Dep('de'), 1);
 
 my @jobs;
 for my $arg (@ARGV) {
@@ -580,8 +582,8 @@ for my $arg (@ARGV) {
     print "[ignoring case for '$arg']\n" unless $sel->isempty();
   }
   die("nothing matches '$arg'\n") if $sel->isempty();
-  print "[using file list match for '$arg']\n" if $sel->flags() & $solv::Selection::SELECTION_FILELIST;
-  print "[using capability match for '$arg']\n" if $sel->flags() & $solv::Selection::SELECTION_PROVIDES;
+  print "[using file list match for '$arg']\n" if $sel->{flags} & $solv::Selection::SELECTION_FILELIST;
+  print "[using capability match for '$arg']\n" if $sel->{flags} & $solv::Selection::SELECTION_PROVIDES;
   push @jobs, $sel->jobs($cmdactionmap{$cmd});
 }
 

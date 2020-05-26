@@ -36,6 +36,7 @@
 #include "solver.h"
 #include "solverdebug.h"
 #include "transaction.h"
+#include "testcase.h"
 #ifdef SUSE
 #include "repo_autopattern.h"
 #endif
@@ -49,7 +50,7 @@
 #include "fileconflicts.h"
 #include "deltarpm.h"
 #endif
-#if defined(SUSE) || defined(FEDORA)
+#if defined(SUSE) || defined(FEDORA) || defined(MAGEIA)
 #include "patchjobs.h"
 #endif
 
@@ -129,7 +130,7 @@ showdiskusagechanges(Transaction *trans)
   duc[3].path = "/etc";
   transaction_calc_duchanges(trans, duc, 4);
   for (i = 0; i < 4; i++)
-    printf("duchanges %s: %d K  %d inodes\n", duc[i].path, duc[i].kbytes, duc[i].files);
+    printf("duchanges %s: %lld K  %lld inodes\n", duc[i].path, duc[i].kbytes, duc[i].files);
 }
 #endif
 
@@ -168,7 +169,6 @@ find_repo(const char *name, Pool *pool, struct repoinfo *repoinfos, int nrepoinf
   return 0;
 }
 
-
 #define MODE_LIST        0
 #define MODE_INSTALL     1
 #define MODE_ERASE       2
@@ -195,7 +195,7 @@ usage(int r)
   fprintf(stderr, "    search:       search name/summary/description\n");
   fprintf(stderr, "    update:       update installed packages\n");
   fprintf(stderr, "    verify:       check dependencies of installed packages\n");
-#if defined(SUSE) || defined(FEDORA)
+#if defined(SUSE) || defined(FEDORA) || defined(MAGEIA)
   fprintf(stderr, "    patch:        install newest maintenance updates\n");
 #endif
   fprintf(stderr, "\n");
@@ -226,8 +226,10 @@ main(int argc, char **argv)
   char *rootdir = 0;
   char *keyname = 0;
   int keyname_depstr = 0;
+  int keyname_alldeps = 0;		/* dnf repoquesy --alldeps */
   int debuglevel = 0;
   int answer, acnt = 0;
+  char *testcase = 0;
 
   argc--;
   argv++;
@@ -244,7 +246,7 @@ main(int argc, char **argv)
       mainmode = MODE_INSTALL;
       mode = SOLVER_INSTALL;
     }
-#if defined(SUSE) || defined(FEDORA)
+#if defined(SUSE) || defined(FEDORA) || defined(MAGEIA)
   else if (!strcmp(argv[0], "patch"))
     {
       mainmode = MODE_PATCH;
@@ -314,15 +316,27 @@ main(int argc, char **argv)
 	  argc--;
 	  argv++;
 	}
+      else if (argc > 1 && !strcmp(argv[1], "--alldeps"))
+	{
+	  keyname_alldeps = 1;		/* dnf repoquesy --alldeps */
+	  argc--;
+	  argv++;
+	}
       else if (argc > 1 && !strcmp(argv[1], "--depstr"))
 	{
-	  keyname_depstr = 1;
+	  keyname_depstr = 1;	/* do literal matching instead of dep intersection */
 	  argc--;
 	  argv++;
 	}
       else if (argc > 2 && !strcmp(argv[1], "--keyname"))
 	{
 	  keyname = argv[2];
+	  argc -= 2;
+	  argv += 2;
+	}
+      else if (argc > 2 && !strcmp(argv[1], "--testcase"))
+	{
+	  testcase = argv[2];
 	  argc -= 2;
 	  argv += 2;
 	}
@@ -451,6 +465,10 @@ main(int argc, char **argv)
       dataiterator_free(&di);
       if (repofilter.count)
 	selection_filter(pool, &sel, &repofilter);
+      if (archfilter.count)
+	selection_filter(pool, &sel, &archfilter);
+      if (kindfilter.count)
+	selection_filter(pool, &sel, &kindfilter);
 	
       queue_init(&q);
       selection_solvables(pool, &sel, &q);
@@ -525,14 +543,12 @@ main(int argc, char **argv)
 	flags |= SELECTION_WITH_SOURCE;
       if (argv[i][0] == '/')
 	flags |= SELECTION_FILELIST | (mode == MODE_ERASE ? SELECTION_INSTALLED_ONLY : 0);
-      if (!keyname)
+      if (keyname && keyname_depstr)
+	flags |= SELECTION_MATCH_DEPSTR;
+      if (!keyname || keyname_alldeps)
         rflags = selection_make(pool, &job2, argv[i], flags);
       else
-	{
-	  if (keyname_depstr)
-	    flags |= SELECTION_MATCH_DEPSTR;
-          rflags = selection_make_matchdeps(pool, &job2, argv[i], flags, pool_str2id(pool, keyname, 1), 0);
-	}
+        rflags = selection_make_matchdeps(pool, &job2, argv[i], flags, pool_str2id(pool, keyname, 1), 0);
       if (repofilter.count)
 	selection_filter(pool, &job2, &repofilter);
       if (archfilter.count)
@@ -542,7 +558,7 @@ main(int argc, char **argv)
       if (!job2.count)
 	{
 	  flags |= SELECTION_NOCASE;
-	  if (!keyname)
+	  if (!keyname || keyname_alldeps)
             rflags = selection_make(pool, &job2, argv[i], flags);
 	  else
 	    rflags = selection_make_matchdeps(pool, &job2, argv[i], flags, pool_str2id(pool, keyname, 1), 0);
@@ -564,6 +580,14 @@ main(int argc, char **argv)
         printf("[using file list match for '%s']\n", argv[i]);
       if (rflags & SELECTION_PROVIDES)
 	printf("[using capability match for '%s']\n", argv[i]);
+      if (keyname && keyname_alldeps)
+	{
+	  Queue q;
+	  queue_init(&q);
+	  selection_solvables(pool, &job2, &q);
+	  selection_make_matchsolvablelist(pool, &job2, &q, 0, pool_str2id(pool, keyname, 1), 0);
+	  queue_free(&q);
+	}
       queue_insertn(&job, job.count, job2.count, job2.elements);
       queue_free(&job2);
     }
@@ -638,7 +662,7 @@ main(int argc, char **argv)
       exit(0);
     }
 
-#if defined(SUSE) || defined(FEDORA)
+#if defined(SUSE) || defined(FEDORA) || defined(MAGEIA)
   if (mainmode == MODE_PATCH)
     add_patchjobs(pool, &job);
 #endif
@@ -655,10 +679,10 @@ main(int argc, char **argv)
         job.elements[i] |= SOLVER_FORCEBEST;
     }
 
+#if 0
   // multiversion test
-  // queue_push2(&job, SOLVER_MULTIVERSION|SOLVER_SOLVABLE_NAME, pool_str2id(pool, "kernel-pae", 1));
-  // queue_push2(&job, SOLVER_MULTIVERSION|SOLVER_SOLVABLE_NAME, pool_str2id(pool, "kernel-pae-base", 1));
-  // queue_push2(&job, SOLVER_MULTIVERSION|SOLVER_SOLVABLE_NAME, pool_str2id(pool, "kernel-pae-extra", 1));
+  queue_push2(&job, SOLVER_MULTIVERSION|SOLVER_SOLVABLE_PROVIDES, pool_str2id(pool, "multiversion(kernel)", 1));
+#endif
 #if 0
   queue_push2(&job, SOLVER_INSTALL|SOLVER_SOLVABLE_PROVIDES, pool_rel2id(pool, NAMESPACE_LANGUAGE, 0, REL_NAMESPACE, 1));
   queue_push2(&job, SOLVER_ERASE|SOLVER_CLEANDEPS|SOLVER_SOLVABLE_PROVIDES, pool_rel2id(pool, NAMESPACE_LANGUAGE, 0, REL_NAMESPACE, 1));
@@ -667,7 +691,10 @@ main(int argc, char **argv)
 rerunsolver:
   solv = solver_create(pool);
   solver_set_flag(solv, SOLVER_FLAG_SPLITPROVIDES, 1);
-#ifdef FEDORA
+#if 0
+  solver_set_flag(solv, SOLVER_FLAG_IGNORE_RECOMMENDED, 1);
+#endif
+#if defined(FEDORA) || defined(MAGEIA)
   solver_set_flag(solv, SOLVER_FLAG_ALLOW_VENDORCHANGE, 1);
 #endif
   if (mainmode == MODE_ERASE)
@@ -679,7 +706,15 @@ rerunsolver:
       Id problem, solution;
       int pcnt, scnt;
 
-      if (!solver_solve(solv, &job))
+      pcnt = solver_solve(solv, &job);
+      if (testcase)
+	{
+	  printf("Writing solver testcase:\n");
+	  if (!testcase_write(solv, testcase, TESTCASE_RESULT_TRANSACTION | TESTCASE_RESULT_PROBLEMS, 0, 0))
+	    printf("%s\n", pool_errstr(pool));
+	  testcase = 0;
+	}
+      if (!pcnt)
 	break;
       pcnt = solver_problem_count(solv);
       printf("Found %d problems:\n", pcnt);
@@ -752,7 +787,7 @@ rerunsolver:
 #if defined(SUSE)
   showdiskusagechanges(trans);
 #endif
-  printf("install size change: %d K\n", transaction_calc_installsizechange(trans));
+  printf("install size change: %lld K\n", transaction_calc_installsizechange(trans));
   printf("\n");
 
   acnt = solver_alternatives_count(solv);

@@ -4,7 +4,11 @@
 
 ADD_LIBRARY (toolstuff STATIC common_write.c)
 
-SET (tools_list mergesolv dumpsolv installcheck testsolv)
+IF (WIN32)
+    INCLUDE_DIRECTORIES (${PROJECT_SOURCE_DIR}/win32/)
+ENDIF ()
+
+SET (tools_list testsolv mergesolv dumpsolv installcheck testsolv)
 
 IF (ENABLE_RPMDB)
 ADD_EXECUTABLE (rpmdb2solv rpmdb2solv.c)
@@ -91,17 +95,25 @@ ENDIF (ENABLE_CUDFREPO)
 ADD_EXECUTABLE (installcheck installcheck.c)
 TARGET_LINK_LIBRARIES (installcheck libsolvext libsolv ${SYSTEM_LIBRARIES})
 
-IF (SUSE)
-ADD_EXECUTABLE (patchcheck patchcheck.c)
-TARGET_LINK_LIBRARIES (patchcheck libsolvext libsolv ${SYSTEM_LIBRARIES})
-ENDIF (SUSE)
-
 IF (ENABLE_APPDATA)
 ADD_EXECUTABLE (appdata2solv appdata2solv.c)
 TARGET_LINK_LIBRARIES (appdata2solv toolstuff libsolvext libsolv ${SYSTEM_LIBRARIES})
 
 SET (tools_list ${tools_list} appdata2solv)
 ENDIF (ENABLE_APPDATA)
+
+IF (ENABLE_CONDA)
+ADD_EXECUTABLE (conda2solv conda2solv.c)
+TARGET_LINK_LIBRARIES (conda2solv toolstuff libsolvext libsolv ${SYSTEM_LIBRARIES})
+
+SET (tools_list ${tools_list} conda2solv)
+ENDIF (ENABLE_CONDA)
+
+IF (NOT WIN32)
+ADD_EXECUTABLE (repo2solv repo2solv.c )
+TARGET_LINK_LIBRARIES (repo2solv toolstuff libsolvext libsolv ${SYSTEM_LIBRARIES})
+SET(tools_list ${tools_list} repo2solv)
+ENDIF (NOT WIN32)
 
 ADD_EXECUTABLE (dumpsolv dumpsolv.c )
 TARGET_LINK_LIBRARIES (dumpsolv libsolv)
@@ -112,6 +124,4 @@ TARGET_LINK_LIBRARIES (mergesolv toolstuff libsolvext libsolv ${SYSTEM_LIBRARIES
 ADD_EXECUTABLE (testsolv testsolv.c)
 TARGET_LINK_LIBRARIES (testsolv libsolvext libsolv ${SYSTEM_LIBRARIES})
 
-INSTALL (TARGETS ${tools_list} DESTINATION ${BIN_INSTALL_DIR})
-
-INSTALL (PROGRAMS repo2solv.sh DESTINATION ${BIN_INSTALL_DIR})
+INSTALL (TARGETS ${tools_list} DESTINATION ${CMAKE_INSTALL_BINDIR})

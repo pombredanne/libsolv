@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2013, SUSE Inc.
+ * Copyright (c) 2013-2020, SUSE LLC.
  *
  * This program is licensed under the BSD license, read LICENSE.BSD
  * for further information
  */
 
-/* simple and slow rsa/dsa verification code. */
+/* simple and slow pgp signature verification code. */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,17 +14,15 @@
 #include "util.h"
 #include "solv_pgpvrfy.h"
 
+#ifndef ENABLE_PGPVRFY_ED25519
+#define ENABLE_PGPVRFY_ED25519 1
+#endif
+
 typedef unsigned int mp_t;
 typedef unsigned long long mp2_t;
 #define MP_T_BYTES 4
 
 #define MP_T_BITS (MP_T_BYTES * 8)
-
-static inline void
-mpzero(int len, mp_t *target)
-{
-  memset(target, 0, MP_T_BYTES * len);
-}
 
 static inline mp_t *
 mpnew(int len)
@@ -33,9 +31,56 @@ mpnew(int len)
 }
 
 static inline void
+mpzero(int len, mp_t *target)
+{
+  memset(target, 0, MP_T_BYTES * len);
+}
+
+static inline void
 mpcpy(int len, mp_t *target, mp_t *source)
 {
   memcpy(target, source, len * MP_T_BYTES);
+}
+
+static void
+mpsetfrombe(int len, mp_t *target, const unsigned char *buf, int bufl)
+{
+  int i, mpl = len * MP_T_BYTES;
+  buf += bufl;
+  if (bufl >= mpl)
+    bufl = mpl;
+  if (mpl)
+    memset(target, 0, mpl);
+  for (i = 0; bufl > 0; bufl--, i++)
+    target[i / MP_T_BYTES] |= (int)(*--buf) << (8 * (i % MP_T_BYTES));
+}
+
+static int
+mpisless(int len, mp_t *a, mp_t *b)
+{
+  int i;
+  for (i = len - 1; i >= 0; i--)
+    if (a[i] < b[i])
+      return 1;
+    else if (a[i] > b[i])
+      return 0;
+  return 0;
+}
+
+static int
+mpisequal(int len, mp_t *a, mp_t *b)
+{
+  return memcmp(a, b, len * MP_T_BYTES) == 0;
+}
+
+static int
+mpiszero(int len, mp_t *a)
+{
+  int i;
+  for (i = 0; i < len; i++)
+    if (a[i])
+      return 0;
+  return 1;
 }
 
 #if 0
@@ -49,6 +94,19 @@ static void mpdump(int l, mp_t *a, char *s)
   fprintf(stderr, "\n");
 }
 #endif
+
+/* subtract mod from target. target >= mod */
+static inline void mpsubmod(int len, mp_t *target, mp_t *mod)
+{
+  int i;
+  mp2_t n;
+  for (n = 0, i = 0; i < len; i++)
+    {
+      mp2_t n2 = (mp2_t)mod[i] + n;
+      n = n2 > target[i] ? 1 : 0;
+      target[i] -= (mp_t)n2;
+    }
+}
 
 /* target[len] = x, target = target % mod
  * assumes that target < (mod << MP_T_BITS)! */
@@ -86,31 +144,13 @@ mpdomod(int len, mp_t *target, mp2_t x, mp_t *mod)
       x -= n;
     }
   target[i] = x;
-  if (x >= mod[i])
-    {
-      mp_t n;
-      if (x == mod[i])
-	{
-	  for (j = i - 1; j >= 0; j--)
-	    if (target[j] < mod[j])
-	      return;
-	    else if (target[j] > mod[j])
-	      break;
-	}
-      /* target >= mod, subtract mod */
-      n = 0;
-      for (j = 0; j <= i; j++)
-	{
-	  mp2_t n2 = mod[j] + n;
-	  n = n2 > target[j] ? 1 : 0;
-	  target[j] -= (mp_t)n2;
-	}
-    }
+  if (x > mod[i] || (x == mod[i] && !mpisless(i, target, mod)))
+    mpsubmod(i + 1, target, mod);
 }
 
 /* target += src * m */
 static void
-mpmult_add_int(int len, mp_t *target, mp_t *src, mp2_t m, mp_t *mod)
+mpmul_add_int(int len, mp_t *target, mp_t *src, mp2_t m, mp_t *mod)
 {
   int i;
   mp2_t x = 0;
@@ -139,7 +179,7 @@ mpshift(int len, mp_t *target, mp_t *mod)
 
 /* target += m1 * m2 */
 static void
-mpmult_add(int len, mp_t *target, mp_t *m1, int m2len, mp_t *m2, mp_t *tmp, mp_t *mod)
+mpmul_add(int len, mp_t *target, mp_t *m1, int m2len, mp_t *m2, mp_t *tmp, mp_t *mod)
 {
   int i, j;
   for (j = m2len - 1; j >= 0; j--)
@@ -151,19 +191,19 @@ mpmult_add(int len, mp_t *target, mp_t *m1, int m2len, mp_t *m2, mp_t *tmp, mp_t
   for (i = 0; i < j; i++)
     {
       if (m2[i])
-        mpmult_add_int(len, target, tmp, m2[i], mod);
+	mpmul_add_int(len, target, tmp, m2[i], mod);
       mpshift(len, tmp, mod);
     }
   if (m2[i])
-    mpmult_add_int(len, target, tmp, m2[i], mod);
+    mpmul_add_int(len, target, tmp, m2[i], mod);
 }
 
 /* target = target * m */
 static void
-mpmult_inplace(int len, mp_t *target, mp_t *m, mp_t *tmp1, mp_t *tmp2, mp_t *mod)
+mpmul_inplace(int len, mp_t *target, mp_t *m, mp_t *tmp1, mp_t *tmp2, mp_t *mod)
 {
   mpzero(len, tmp1);
-  mpmult_add(len, tmp1, target, len, m, tmp2, mod);
+  mpmul_add(len, tmp1, target, len, m, tmp2, mod);
   mpcpy(len, target, tmp1);
 }
 
@@ -172,15 +212,15 @@ static void
 mppow_int(int len, mp_t *target, mp_t *t, mp_t *mod, int e)
 {
   mp_t *t2 = t + len * 16;
-  mpmult_inplace(len, target, target, t, t2, mod);
-  mpmult_inplace(len, target, target, t, t2, mod);
-  mpmult_inplace(len, target, target, t, t2, mod);
-  mpmult_inplace(len, target, target, t, t2, mod);
+  mpmul_inplace(len, target, target, t, t2, mod);
+  mpmul_inplace(len, target, target, t, t2, mod);
+  mpmul_inplace(len, target, target, t, t2, mod);
+  mpmul_inplace(len, target, target, t, t2, mod);
   if (e)
-    mpmult_inplace(len, target, t + len * e, t, t2, mod);
+    mpmul_inplace(len, target, t + len * e, t, t2, mod);
 }
 
-/* target = b ^ e (b has to be < mod) */
+/* target = b ^ e (b < mod) */
 static void
 mppow(int len, mp_t *target, mp_t *b, int elen, mp_t *e, mp_t *mod)
 {
@@ -196,7 +236,7 @@ mppow(int len, mp_t *target, mp_t *b, int elen, mp_t *e, mp_t *mod)
   t = mpnew(len * 17);
   mpcpy(len, t + len, b);
   for (j = 2; j < 16; j++)
-    mpmult_add(len, t + len * j, b, len, t + len * j - len, t + len * 16, mod);
+    mpmul_add(len, t + len * j, b, len, t + len * j - len, t + len * 16, mod);
   for (; i >= 0; i--)
     {
 #if MP_T_BYTES == 4
@@ -216,36 +256,14 @@ mppow(int len, mp_t *target, mp_t *b, int elen, mp_t *e, mp_t *mod)
   free(t);
 }
 
-/* target = m1 * m2 (m1 has to be < mod) */
+/* target = m1 * m2 (m1 < mod) */
 static void
-mpmult(int len, mp_t *target, mp_t *m1, int m2len, mp_t *m2, mp_t *mod)
+mpmul(int len, mp_t *target, mp_t *m1, int m2len, mp_t *m2, mp_t *mod)
 {
   mp_t *tmp = mpnew(len);
   mpzero(len, target);
-  mpmult_add(len, target, m1, m2len, m2, tmp, mod);
+  mpmul_add(len, target, m1, m2len, m2, tmp, mod);
   free(tmp);
-}
-
-static int
-mpisless(int len, mp_t *a, mp_t *b)
-{
-  int i;
-  for (i = len - 1; i >= 0; i--)
-    if (a[i] < b[i])
-      return 1;
-    else if (a[i] > b[i])
-      return 0;
-  return 0;
-}
-
-static int
-mpiszero(int len, mp_t *a)
-{
-  int i;
-  for (i = 0; i < len; i++)
-    if (a[i])
-      return 0;
-  return 1;
 }
 
 static void
@@ -255,9 +273,50 @@ mpdec(int len, mp_t *a)
   for (i = 0; i < len; i++)
     if (a[i]--)
       return;
-    else
-      a[i] = -(mp_t)1;
 }
+
+#if ENABLE_PGPVRFY_ED25519
+/* target = m1 + m2 (m1, m2 < mod). target may be m1 or m2 */
+static void
+mpadd(int len, mp_t *target, mp_t *m1, mp_t *m2, mp_t *mod)
+{
+  int i;
+  mp2_t x = 0;
+  for (i = 0; i < len; i++)
+    {
+      x += (mp2_t)m1[i] + m2[i];
+      target[i] = x;
+      x >>= MP_T_BITS;
+    }
+  if (x || target[len - 1] > mod[len - 1] ||
+      (target[len -1 ] == mod[len - 1] && !mpisless(len - 1, target, mod)))
+    mpsubmod(len, target, mod);
+}
+
+/* target = m1 - m2 (m1, m2 < mod). target may be m1 or m2 */
+static void
+mpsub(int len, mp_t *target, mp_t *m1, mp_t *m2, mp_t *mod)
+{
+  int i;
+  mp2_t x = 0;
+  for (i = 0; i < len; i++)
+    {
+      x = (mp2_t)m1[i] - m2[i] - x;
+      target[i] = x;
+      x = x & ((mp2_t)1 << MP_T_BITS) ? 1 : 0;
+    }
+  if (x)
+    {
+      for (x = 0, i = 0; i < len; i++)
+	{
+	  x += (mp2_t)target[i] + mod[i];
+	  target[i] = x;
+	  x >>= MP_T_BITS;
+	}
+    }
+}
+#endif
+
 
 static int
 mpdsa(int pl, mp_t *p, int ql, mp_t *q, mp_t *g, mp_t *y, mp_t *r, mp_t *s, int hl, mp_t *h)
@@ -266,6 +325,7 @@ mpdsa(int pl, mp_t *p, int ql, mp_t *q, mp_t *g, mp_t *y, mp_t *r, mp_t *s, int 
   mp_t *tmp;
   mp_t *u1, *u2;
   mp_t *gu1, *yu2;
+  int res;
 #if 0
   mpdump(pl, p, "p = ");
   mpdump(ql, q, "q = ");
@@ -286,41 +346,38 @@ mpdsa(int pl, mp_t *p, int ql, mp_t *q, mp_t *g, mp_t *y, mp_t *r, mp_t *s, int 
   mpdec(ql, tmp);			/* tmp-- */
   mpdec(ql, tmp);			/* tmp-- */
   w = mpnew(ql);
-  mppow(ql, w, s, ql, tmp, q);		/* w = s ^ tmp (s ^ -1) */
+  mppow(ql, w, s, ql, tmp, q);		/* w = s ^ tmp = (s ^ -1) */
   u1 = mpnew(pl);			/* note pl */
   /* order is important here: h can be >= q */
-  mpmult(ql, u1, w, hl, h, q);		/* u1 = w * h */
+  mpmul(ql, u1, w, hl, h, q);		/* u1 = w * h */
   u2 = mpnew(ql);			/* u2 = 0 */
-  mpmult(ql, u2, w, ql, r, q);		/* u2 = w * r */
+  mpmul(ql, u2, w, ql, r, q);		/* u2 = w * r */
   free(w);
   gu1 = mpnew(pl);
   yu2 = mpnew(pl);
   mppow(pl, gu1, g, ql, u1, p);		/* gu1 = g ^ u1 */
   mppow(pl, yu2, y, ql, u2, p);		/* yu2 = y ^ u2 */
-  mpmult(pl, u1, gu1, pl, yu2, p);	/* u1 = gu1 * yu2 */
+  mpmul(pl, u1, gu1, pl, yu2, p);	/* u1 = gu1 * yu2 */
   free(gu1);
   free(yu2);
   mpzero(ql, u2);
   u2[0] = 1;				/* u2 = 1 */
-  mpmult(ql, tmp, u2, pl, u1, q);	/* tmp = u2 * u1 */
+  mpmul(ql, tmp, u2, pl, u1, q);	/* tmp = u2 * u1 */
   free(u1);
   free(u2);
 #if 0
   mpdump(ql, tmp, "res = ");
 #endif
-  if (memcmp(tmp, r, ql * MP_T_BYTES) != 0)
-    {
-      free(tmp);
-      return 0;
-    }
+  res = mpisequal(ql, tmp, r);
   free(tmp);
-  return 1;
+  return res;
 }
 
 static int
 mprsa(int nl, mp_t *n, int el, mp_t *e, mp_t *m, mp_t *c)
 {
   mp_t *tmp;
+  int res;
 #if 0
   mpdump(nl, n, "n = ");
   mpdump(el, e, "e = ");
@@ -336,34 +393,24 @@ mprsa(int nl, mp_t *n, int el, mp_t *e, mp_t *m, mp_t *c)
 #if 0
   mpdump(nl, tmp, "res = ");
 #endif
-  if (memcmp(tmp, c, nl * MP_T_BYTES) != 0)
-    {
-      free(tmp);
-      return 0;
-    }
+  res = mpisequal(nl, tmp, c);
   free(tmp);
-  return 1;
+  return res;
 }
+
+#if ENABLE_PGPVRFY_ED25519
+# include "solv_ed25519.h"
+#endif
 
 /* create mp with size tbits from data with size dbits */
 static mp_t *
 mpbuild(const unsigned char *d, int dbits, int tbits, int *mplp)
 {
   int l = (tbits + MP_T_BITS - 1) / MP_T_BITS;
-  int dl, i;
-
   mp_t *out = mpnew(l ? l : 1);
   if (mplp)
     *mplp = l;
-  dl = (dbits + 7) / 8;
-  d += dl;
-  if (dbits > tbits)
-    dl = (tbits + 7) / 8;
-  for (i = 0; dl > 0; dl--, i++)
-    {
-      int x = *--d;
-      out[i / MP_T_BYTES] |= x << (8 * (i % MP_T_BYTES));
-    }
+  mpsetfrombe(l, out, d, (dbits + 7) / 8);
   return out;
 }
 
@@ -390,6 +437,8 @@ findmpi(const unsigned char **mpip, int *mpilp, int maxbits, int *outlen)
   return mpi + 2;
 }
 
+/* sig: 0:algo 1:hash 2-:mpidata */
+/* pub: 0:algo 1-:mpidata */
 int
 solv_pgpvrfy(const unsigned char *pub, int publ, const unsigned char *sig, int sigl)
 {
@@ -515,6 +564,36 @@ solv_pgpvrfy(const unsigned char *pub, int publ, const unsigned char *sig, int s
 	free(hx);
 	break;
       }
+#if ENABLE_PGPVRFY_ED25519
+    case 22:		/* EdDSA */
+      {
+	unsigned char sigdata[64];
+	const unsigned char *r, *s;
+	int rlen, slen;
+
+	/* check the curve */
+	if (publ < 11 || memcmp(pub + 1, "\011\053\006\001\004\001\332\107\017\001", 10) != 0)
+	  return 0;	/* we only support the Ed25519 curve */
+	/* the pubkey always has 7 + 256 bits */
+	if (publ != 1 + 10 + 2 + 1 + 32 || pub[1 + 10 + 0] != 1 || pub[1 + 10 + 1] != 7 || pub[1 + 10 + 2] != 0x40)
+	  return 0;
+	mpi = sig + 2 + hashl;
+	mpil = sigl - (2 + hashl);
+	r = findmpi(&mpi, &mpil, 256, &rlen);
+	s = findmpi(&mpi, &mpil, 256, &slen);
+	if (!r || !s)
+	  return 0;
+	memset(sigdata, 0, 64);
+	rlen = (rlen + 7) / 8;
+	slen = (slen + 7) / 8;
+	if (rlen)
+	  memcpy(sigdata + 32 - rlen, r, rlen);
+	if (slen)
+	  memcpy(sigdata + 64 - slen, s, rlen);
+	res = mped25519(pub + 1 + 10 + 2 + 1, sigdata, sig + 2, hashl);
+	break;
+      }
+#endif
     default:
       return 0;		/* unsupported pubkey algo */
     }

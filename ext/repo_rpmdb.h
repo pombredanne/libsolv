@@ -7,6 +7,7 @@
 
 #include "queue.h"
 #include "repo.h"
+#include "chksum.h"
 
 struct headerToken_s;
 
@@ -25,6 +26,7 @@ extern Id repo_add_rpm(Repo *repo, const char *rpm, int flags);
 #define RPM_ADD_WITH_LEADSIGID	(1 << 16)
 #define RPM_ADD_WITH_CHANGELOG	(1 << 17)
 #define RPM_ADD_FILTERED_FILELIST (1 << 18)
+#define RPMDB_KEEP_GPG_PUBKEY   (1 << 19)
 
 #define RPMDB_EMPTY_REFREPO	(1 << 30)	/* internal */
 
@@ -38,7 +40,11 @@ extern void *rpm_state_create(Pool *pool, const char *rootdir);
 extern void *rpm_state_free(void *rpmstate);
 
 /* return all matching rpmdbids */
-extern int  rpm_installedrpmdbids(void *rpmstate, const char *index, const char *match, Queue *rpmdbidq);
+extern int rpm_installedrpmdbids(void *rpmstate, const char *index, const char *match, Queue *rpmdbidq);
+/* stat the package database */
+extern int rpm_stat_database(void *rpmstate, void *stb);
+/* hash the state of the package database */
+extern int rpm_hash_database_state(void *rpmstate, Chksum *chk);
 
 /* return handles to a rpm header */
 extern void *rpm_byrpmdbid(void *rpmstate, Id rpmdbid);

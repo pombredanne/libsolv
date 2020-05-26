@@ -17,12 +17,25 @@ static struct RichOpComp {
   int l;
   Id fl;
 } RichOps[] = {
-  { "and",  3, REL_AND },
-  { "or",   2, REL_OR },
-  { "if",   2, REL_COND },
-  { "else", 4, REL_ELSE },
+  { "and",     3, REL_AND },
+  { "or",      2, REL_OR },
+  { "if",      2, REL_COND },
+  { "unless",  6, REL_UNLESS },
+  { "else",    4, REL_ELSE },
+  { "with",    4, REL_WITH },
+  { "without", 7, REL_WITHOUT },
   { NULL, 0, 0},
 };
+
+static inline const char *
+skipnonwhite(const char *p)
+{
+  int bl = 0;
+  while (*p && !(*p == ' ' || *p == ',' || (*p == ')' && bl-- <= 0)))
+    if (*p++ == '(')
+      bl++;
+  return p;
+}
 
 static Id
 parseRichDep(Pool *pool, const char **depp, Id chainfl)
@@ -30,7 +43,7 @@ parseRichDep(Pool *pool, const char **depp, Id chainfl)
   const char *p = *depp;
   const char *n;
   Id id, evr;
-  int fl, bl;
+  int fl;
   struct RichOpComp *op;
 
   if (!chainfl && *p++ != '(')
@@ -48,10 +61,7 @@ parseRichDep(Pool *pool, const char **depp, Id chainfl)
   else
     {
       n = p;
-      bl = 0;
-      while (*p && !(*p == ' ' || *p == ',' || (*p == ')' && bl-- <= 0)))
-	if (*p++ == '(')
-	  bl++;
+      p = skipnonwhite(p);
       if (n == p)
 	return 0;
       id = pool_strn2id(pool, n, p - n, 1);
@@ -76,10 +86,7 @@ parseRichDep(Pool *pool, const char **depp, Id chainfl)
 	      while (*p == ' ')
 		p++;
 	      n = p;
-	      bl = 0;
-	      while (*p && !(*p == ' ' || *p == ',' || (*p == ')' && bl-- <= 0)))
-		if (*p++ == '(')
-		  bl++;
+	      p = skipnonwhite(p);
 	      if (p - n > 2 && n[0] == '0' && n[1] == ':')
 		n += 2;		/* strip zero epoch */
 	      if (n == p)
@@ -106,7 +113,7 @@ parseRichDep(Pool *pool, const char **depp, Id chainfl)
   fl = op->fl;
   if (!fl)
     return 0;
-  if (chainfl == REL_COND && fl == REL_ELSE)
+  if ((chainfl == REL_COND || chainfl == REL_UNLESS) && fl == REL_ELSE)
     chainfl = 0;
   if (chainfl && fl != chainfl)
     return 0;

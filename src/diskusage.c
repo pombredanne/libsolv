@@ -308,7 +308,7 @@ pool_calc_duchanges(Pool *pool, Map *installedmap, DUChanges *mps, int nmps)
 	{
 	  if (MAPTST(installedmap, sp))
 	    continue;
-	  if (ignoredu.map && MAPTST(&ignoredu, sp - oldinstalled->start))
+	  if (ignoredu.size && MAPTST(&ignoredu, sp - oldinstalled->start))
 	    continue;
 	  repo_search(oldinstalled, sp, SOLVABLE_DISKUSAGE, 0, 0, solver_fill_DU_cb, &cbd);
 	}
@@ -318,12 +318,12 @@ pool_calc_duchanges(Pool *pool, Map *installedmap, DUChanges *mps, int nmps)
   solv_free(mptree);
 }
 
-int
+long long
 pool_calc_installsizechange(Pool *pool, Map *installedmap)
 {
   Id sp;
   Solvable *s;
-  int change = 0; 
+  long long change = 0; 
   Repo *oldinstalled = pool->installed;
 
   for (sp = 1, s = pool->solvables + sp; sp < pool->nsolvables; sp++, s++) 

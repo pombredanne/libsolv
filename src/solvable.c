@@ -32,9 +32,9 @@ pool_solvable2str(Pool *pool, Solvable *s)
   int nl, el, al;
   char *p;
   n = pool_id2str(pool, s->name);
-  e = pool_id2str(pool, s->evr);
+  e = s->evr ? pool_id2str(pool, s->evr) : "";
   /* XXX: may want to skip the epoch here */
-  a = pool_id2str(pool, s->arch);
+  a = s->arch ? pool_id2str(pool, s->arch) : "";
   nl = strlen(n);
   el = strlen(e);
   al = strlen(a);
@@ -57,6 +57,16 @@ pool_solvable2str(Pool *pool, Solvable *s)
     {
       p[nl + el] = pool->disttype == DISTTYPE_HAIKU ? '-' : '.';
       strcpy(p + nl + el + 1, a);
+    }
+  if (pool->disttype == DISTTYPE_CONDA && solvable_lookup_type(s, SOLVABLE_BUILDFLAVOR))
+    {
+      Queue flavorq;
+      int i;
+      queue_init(&flavorq);
+      solvable_lookup_idarray(s, SOLVABLE_BUILDFLAVOR, &flavorq);
+      for (i = 0; i < flavorq.count; i++)
+	p = pool_tmpappend(pool, p, "-", pool_id2str(pool, flavorq.elements[i]));
+      queue_free(&flavorq);
     }
   return p;
 }
@@ -110,10 +120,15 @@ solvable_lookup_str_joinarray(Solvable *s, Id keyname, const char *joinstr)
   if (solvable_lookup_idarray(s, keyname, &q) && q.count)
     {
       Pool *pool = s->repo->pool;
-      int i;
-      str = pool_tmpjoin(pool, pool_id2str(pool, q.elements[0]), 0, 0);
-      for (i = 1; i < q.count; i++)
-	str = pool_tmpappend(pool, str, joinstr, pool_id2str(pool, q.elements[i]));
+      if (q.count == 1)
+	str = (char *)pool_id2str(pool, q.elements[0]);
+      else
+	{
+	  int i;
+	  str = pool_tmpjoin(pool, pool_id2str(pool, q.elements[0]), 0, 0);
+	  for (i = 1; i < q.count; i++)
+	    str = pool_tmpappend(pool, str, joinstr, pool_id2str(pool, q.elements[i]));
+	}
     }
   queue_free(&q);
   return str;
@@ -126,7 +141,7 @@ solvable_lookup_str(Solvable *s, Id keyname)
   if (!s->repo)
     return 0;
   str = repo_lookup_str(s->repo, s - s->repo->pool->solvables, keyname);
-  if (!str && (keyname == SOLVABLE_LICENSE || keyname == SOLVABLE_GROUP))
+  if (!str && (keyname == SOLVABLE_LICENSE || keyname == SOLVABLE_GROUP || keyname == SOLVABLE_BUILDFLAVOR))
     str = solvable_lookup_str_joinarray(s, keyname, ", ");
   return str;
 }
@@ -238,14 +253,14 @@ solvable_lookup_str_poollang(Solvable *s, Id keyname)
 const char *
 solvable_lookup_str_lang(Solvable *s, Id keyname, const char *lang, int usebase)
 {
-  if (s->repo)
-    {
-      Id id = pool_id2langid(s->repo->pool, keyname, lang, 0);
-      if (id)
-        return solvable_lookup_str_base(s, id, keyname, usebase);
-      if (!usebase)
-	return 0;
-    }
+  Id id;
+  if (!s->repo)
+    return 0;
+  id = pool_id2langid(s->repo->pool, keyname, lang, 0);
+  if (id)
+    return solvable_lookup_str_base(s, id, keyname, usebase);
+  if (!usebase)
+    return 0;
   return solvable_lookup_str(s, keyname);
 }
 
@@ -257,14 +272,14 @@ solvable_lookup_num(Solvable *s, Id keyname, unsigned long long notfound)
   return repo_lookup_num(s->repo, s - s->repo->pool->solvables, keyname, notfound);
 }
 
-unsigned int
-solvable_lookup_sizek(Solvable *s, Id keyname, unsigned int notfound)
+unsigned long long
+solvable_lookup_sizek(Solvable *s, Id keyname, unsigned long long notfound)
 {
   unsigned long long size;
   if (!s->repo)
     return notfound;
-  size = solvable_lookup_num(s, keyname, (unsigned long long)notfound << 10);
-  return (unsigned int)((size + 1023) >> 10);
+  size = solvable_lookup_num(s, keyname, (unsigned long long)-1);
+  return size == (unsigned long long)-1 ? notfound : ((size + 1023) >> 10);
 }
 
 int
@@ -278,25 +293,27 @@ solvable_lookup_void(Solvable *s, Id keyname)
 int
 solvable_lookup_bool(Solvable *s, Id keyname)
 {
+  Id type;
   if (!s->repo)
     return 0;
   /* historic nonsense: there are two ways of storing a bool, as num == 1 or void. test both. */
-  if (repo_lookup_type(s->repo, s - s->repo->pool->solvables, keyname) == REPOKEY_TYPE_VOID)
+  type = repo_lookup_type(s->repo, s - s->repo->pool->solvables, keyname);
+  if (type == REPOKEY_TYPE_VOID)
     return 1;
-  return repo_lookup_num(s->repo, s - s->repo->pool->solvables, keyname, 0) == 1;
+  if (type == REPOKEY_TYPE_NUM || type == REPOKEY_TYPE_CONSTANT)
+    return repo_lookup_num(s->repo, s - s->repo->pool->solvables, keyname, 0) == 1;
+  return 0;
 }
 
 const unsigned char *
 solvable_lookup_bin_checksum(Solvable *s, Id keyname, Id *typep)
 {
-  Repo *repo = s->repo;
-
-  if (!repo)
+  if (!s->repo)
     {
       *typep = 0;
       return 0;
     }
-  return repo_lookup_bin_checksum(repo, s - repo->pool->solvables, keyname, typep);
+  return repo_lookup_bin_checksum(s->repo, s - s->repo->pool->solvables, keyname, typep);
 }
 
 const char *
@@ -304,6 +321,12 @@ solvable_lookup_checksum(Solvable *s, Id keyname, Id *typep)
 {
   const unsigned char *chk = solvable_lookup_bin_checksum(s, keyname, typep);
   return chk ? pool_bin2hex(s->repo->pool, chk, solv_chksum_len(*typep)) : 0;
+}
+
+unsigned int
+solvable_lookup_count(Solvable *s, Id keyname)
+{
+  return s->repo ? repo_lookup_count(s->repo, s - s->repo->pool->solvables, keyname) : 0;
 }
 
 static inline const char *
@@ -456,7 +479,7 @@ pool_create_state_maps(Pool *pool, Queue *installed, Map *installedmap, Map *con
 int
 solvable_identical(Solvable *s1, Solvable *s2)
 {
-  unsigned int bt1, bt2;
+  unsigned long long bt1, bt2;
   Id rq1, rq2;
   Id *reqp;
   if (s1->name != s2->name)
@@ -503,6 +526,19 @@ solvable_identical(Solvable *s1, Solvable *s2)
 	  rq2 ^= *reqp;
       if (rq1 != rq2)
 	 return 0;
+    }
+  if (s1->repo && s1->repo->pool->disttype == DISTTYPE_CONDA)
+    {
+      /* check buildflavor and buildversion */
+      const char *str1, *str2;
+      str1 = solvable_lookup_str(s1, SOLVABLE_BUILDFLAVOR);
+      str2 = solvable_lookup_str(s2, SOLVABLE_BUILDFLAVOR);
+      if (str1 != str2 && (!str1 || !str2 || strcmp(str1, str2) != 0))
+	return 0;
+      str1 = solvable_lookup_str(s1, SOLVABLE_BUILDVERSION);
+      str2 = solvable_lookup_str(s2, SOLVABLE_BUILDVERSION);
+      if (str1 != str2 && (!str1 || !str2 || strcmp(str1, str2) != 0))
+	return 0;
     }
   return 1;
 }
@@ -612,4 +648,101 @@ solvable_matchesdep(Solvable *s, Id keyname, Id dep, int marker)
   i = i == q.count ? 0 : 1;
   queue_free(&q);
   return i;
+}
+
+int
+solvable_matchessolvable_int(Solvable *s, Id keyname, int marker, Id solvid, Map *solvidmap, Queue *depq, Map *missc, int reloff, Queue *outdepq)
+{
+  Pool *pool = s->repo->pool;
+  int i, boff;
+  Id *wp;
+
+  if (depq->count)
+    queue_empty(depq);
+  if (outdepq && outdepq->count)
+    queue_empty(outdepq);
+  solvable_lookup_deparray(s, keyname, depq, marker);
+  for (i = 0; i < depq->count; i++)
+    {
+      Id dep = depq->elements[i];
+      boff = ISRELDEP(dep) ? reloff + GETRELID(dep) : dep;
+      if (MAPTST(missc, boff))
+	continue;
+      if (ISRELDEP(dep))
+	{
+	  Reldep *rd = GETRELDEP(pool, dep);
+	  if (!ISRELDEP(rd->name) && rd->flags < 8)
+	    {
+	      /* do pre-filtering on the base */
+	      if (MAPTST(missc, rd->name))
+		continue;
+	      wp = pool_whatprovides_ptr(pool, rd->name);
+	      if (solvidmap)
+		{
+		  for (; *wp; wp++)
+		    if (MAPTST(solvidmap, *wp))
+		      break;
+		}
+	      else
+		{
+		  for (; *wp; wp++)
+		    if (*wp == solvid)
+		      break;
+		}
+	      if (!*wp)
+		{
+		  /* the base does not include solvid, no need to check the complete dep */
+		  MAPSET(missc, rd->name);
+		  MAPSET(missc, boff);
+		  continue;
+		}
+	    }
+	}
+      wp = pool_whatprovides_ptr(pool, dep);
+      if (solvidmap)
+	{
+	  for (; *wp; wp++)
+	    if (MAPTST(solvidmap, *wp))
+	      break;
+	}
+      else
+	{
+	  for (; *wp; wp++)
+	    if (*wp == solvid)
+	      break;
+	}
+      if (*wp)
+	{
+	  if (outdepq)
+	    {
+	      queue_pushunique(outdepq, dep);
+	      continue;
+	    }
+	  return 1;
+	}
+      MAPSET(missc, boff);
+    }
+  return outdepq && outdepq->count ? 1 : 0;
+}
+
+int
+solvable_matchessolvable(Solvable *s, Id keyname, Id solvid, Queue *depq, int marker)
+{
+  Pool *pool = s->repo->pool;
+  Map missc;		/* cache for misses */
+  int res, reloff;
+  Queue qq;
+
+  if (depq && depq->count)
+    queue_empty(depq);
+  if (s - pool->solvables == solvid)
+    return 0;		/* no self-matches */
+
+  queue_init(&qq);
+  reloff = pool->ss.nstrings;
+  map_init(&missc, reloff + pool->nrels);
+  res = solvable_matchessolvable_int(s, keyname, marker, solvid, 0, &qq, &missc, reloff, depq);
+  map_free(&missc);
+  queue_free(&qq);
+  return res;
 }

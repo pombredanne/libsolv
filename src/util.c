@@ -11,7 +11,13 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
-#include <sys/time.h>
+#include <fcntl.h>
+#ifdef _WIN32
+  #include <windows.h>
+  #include <io.h>
+#else
+  #include <sys/time.h>
+#endif
 
 #include "util.h"
 
@@ -123,6 +129,9 @@ solv_strdup(const char *s)
 unsigned int
 solv_timems(unsigned int subtract)
 {
+#ifdef _WIN32
+  return GetTickCount() - subtract;
+#else
   struct timeval tv;
   unsigned int r;
 
@@ -132,6 +141,17 @@ solv_timems(unsigned int subtract)
   r += ((unsigned int)tv.tv_sec & 0xffff) * 1000;
   r += (unsigned int)tv.tv_usec / 1000;
   return r - subtract;
+#endif
+}
+
+int
+solv_setcloexec(int fd, int state)
+{
+  #ifdef _WIN32
+    return SetHandleInformation((HANDLE) _get_osfhandle(fd), HANDLE_FLAG_INHERIT, state ? 0 : HANDLE_FLAG_INHERIT);
+  #else
+    return fcntl(fd, F_SETFD, state ? FD_CLOEXEC : 0) == 0;
+  #endif
 }
 
 /* bsd's qsort_r has different arguments, so we define our
@@ -139,7 +159,7 @@ solv_timems(unsigned int subtract)
 
    see also: http://sources.redhat.com/ml/libc-alpha/2008-12/msg00003.html
  */
-#if defined(__GLIBC__) && (defined(HAVE_QSORT_R) || defined(HAVE___QSORT_R))
+#if (defined(__GLIBC__) || defined(__NEWLIB__)) && (defined(HAVE_QSORT_R) || defined(HAVE___QSORT_R))
 
 void
 solv_sort(void *base, size_t nmemb, size_t size, int (*compar)(const void *, const void *, void *), void *compard)

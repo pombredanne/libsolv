@@ -26,11 +26,11 @@
 extern "C" {
 #endif
 
-struct _Solver {
+struct s_Solver {
   Pool *pool;				/* back pointer to pool */
   Queue job;				/* copy of the job we're solving */
 
-  int (*solution_callback)(struct _Solver *solv, void *data);
+  int (*solution_callback)(struct s_Solver *solv, void *data);
   void *solution_callback_data;
 
   int pooljobcnt;			/* number of pooljob entries in job queue */
@@ -68,16 +68,24 @@ struct _Solver {
   Id duprules_end;
 
   Id bestrules;				/* rules from SOLVER_FORCEBEST */
+  Id bestrules_up;			/* update rule part starts here*/
   Id bestrules_end;
-  Id *bestrules_pkg;
+  Id *bestrules_info;			/* < 0 : install rule, > 0 : pkg that needs to be updated */
 
   Id yumobsrules;			/* rules from yum obsoletes handling */
   Id yumobsrules_end;
   Id *yumobsrules_info;			/* the dependency for each rule */
 
+  Id blackrules;			/* rules from blacklisted packages */
+  Id blackrules_end;
+
   Id choicerules;			/* choice rules (always weak) */
   Id choicerules_end;
-  Id *choicerules_ref;
+  Id *choicerules_info;			/* the rule we used to generate the choice rule */
+
+  Id recommendsrules;			/* rules from recommends pkg rules with disfavored literals */
+  Id recommendsrules_end;
+  Id *recommendsrules_info;		/* the original pkg rule rule */
 
   Id learntrules;			/* learnt rules, (end == nrules) */
 
@@ -166,10 +174,12 @@ struct _Solver {
   int urpmreorder;			/* true: do special urpm package reordering */
   int strongrecommends;			/* true: create weak rules for recommends */
   int install_also_updates;		/* true: do not prune install job rules to installed packages */
+  int only_namespace_recommended;	/* true: only install packages recommended by namespace */
 
-  Map dupmap;				/* dup these packages*/
-  int dupmap_all;			/* dup all packages */
+  int process_orphans;			/* true: do special orphan processing */
+  Map dupmap;				/* dup to those packages */
   Map dupinvolvedmap;			/* packages involved in dup process */
+  int dupinvolvedmap_all;		/* all packages are involved */
   int dup_allowdowngrade;		/* dup mode: allow to downgrade installed solvable */
   int dup_allownamechange;		/* dup mode: allow to change name of installed solvable */
   int dup_allowarchchange;		/* dup mode: allow to change architecture of installed solvables */
@@ -198,9 +208,8 @@ struct _Solver {
   Map allowuninstallmap;		/* ok to uninstall those */
   int allowuninstall_all;
 
-  Queue *favorq;
-  Map favormap;				/* favored / disfavored packages */
-  Map isdisfavormap;
+  Id *favormap;				/* favor job index, > 0: favored, < 0: disfavored */
+  int havedisfavored;			/* do we have disfavored packages? */
 
   int installedpos;			/* for resolve_installed */
   int do_extra_reordering;		/* reorder for future installed packages */
@@ -209,7 +218,7 @@ struct _Solver {
 #endif	/* LIBSOLV_INTERNAL */
 };
 
-typedef struct _Solver Solver;
+typedef struct s_Solver Solver;
 
 /*
  * queue commands
@@ -238,6 +247,7 @@ typedef struct _Solver Solver;
 #define SOLVER_ALLOWUNINSTALL		0x0b00
 #define SOLVER_FAVOR			0x0c00
 #define SOLVER_DISFAVOR			0x0d00
+#define SOLVER_BLACKLIST		0x0e00
 
 #define SOLVER_JOBMASK			0xff00
 
@@ -315,6 +325,7 @@ typedef struct _Solver Solver;
 #define SOLVER_FLAG_FOCUS_BEST			24
 #define SOLVER_FLAG_STRONG_RECOMMENDS		25
 #define SOLVER_FLAG_INSTALL_ALSO_UPDATES	26
+#define SOLVER_FLAG_ONLY_NAMESPACE_RECOMMENDED	27
 
 #define GET_USERINSTALLED_NAMES			(1 << 0)	/* package names instead of ids */
 #define GET_USERINSTALLED_INVERTED		(1 << 1)	/* autoinstalled */
@@ -341,6 +352,7 @@ extern void solver_get_recommendations(Solver *solv, Queue *recommendationsq, Qu
 extern void solver_get_unneeded(Solver *solv, Queue *unneededq, int filtered);
 extern void solver_get_userinstalled(Solver *solv, Queue *q, int flags);
 extern void pool_add_userinstalled_jobs(Pool *pool, Queue *q, Queue *job, int flags);
+extern void solver_get_cleandeps(Solver *solv, Queue *cleandepsq);
 
 extern int  solver_describe_decision(Solver *solv, Id p, Id *infop);
 extern void solver_describe_weakdep_decision(Solver *solv, Id p, Queue *whyq);

@@ -24,7 +24,7 @@ extern "C" {
  * Ids with relation
  */
 
-typedef struct _Reldep {
+typedef struct s_Reldep {
   Id name;		/* "package" */
   Id evr;		/* "0:42-3" */
   int flags;		/* operation/relation, see REL_x in pool.h */
@@ -41,6 +41,7 @@ extern const char *pool_dep2str(Pool *pool, Id); /* might alloc tmpspace */
 extern void pool_shrink_strings(Pool *pool);
 extern void pool_shrink_rels(Pool *pool);
 extern void pool_freeidhashes(Pool *pool);
+extern void pool_resize_rels_hash(Pool *pool, int numnew);
 
 #ifdef __cplusplus
 }

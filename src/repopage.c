@@ -30,6 +30,12 @@
 #include <fcntl.h>
 #include <time.h>
 
+#ifdef _WIN32
+  #include <windows.h>
+  #include <fileapi.h>
+  #include <io.h>
+#endif
+
 #include "repo.h"
 #include "repopage.h"
 
@@ -399,7 +405,6 @@ match_done:
 	      litlen -= 32;
 	    }
 	}
-      litofs = 0;
     }
   return oo;
 }
@@ -705,11 +710,22 @@ repopagestore_load_page_range(Repopagestore *store, unsigned int pstart, unsigne
 #ifdef DEBUG_PAGING
 	  fprintf(stderr, "PAGEIN: %d to %d", pnum, i);
 #endif
+#ifndef _WIN32
           if (pread(store->pagefd, compressed ? buf : dest, in_len, store->file_offset + p->page_offset) != in_len)
 	    {
 	      perror("mapping pread");
 	      return 0;
 	    }
+#else
+	  DWORD read_len;
+	  OVERLAPPED ovlp = {0};
+	  ovlp.Offset = store->file_offset + p->page_offset;
+	  if (!ReadFile((HANDLE) _get_osfhandle(store->pagefd), compressed ? buf : dest, in_len, &read_len, &ovlp) || read_len != in_len)
+	  {
+	  	perror("mapping ReadFile");
+	  	return 0;
+	  }
+#endif
 	  if (compressed)
 	    {
 	      unsigned int out_len;
@@ -786,7 +802,7 @@ repopagestore_read_or_setup_pages(Repopagestore *store, FILE *fp, unsigned int p
   if (store->pagefd == -1)
     can_seek = 0;
   else
-    fcntl(store->pagefd, F_SETFD, FD_CLOEXEC);
+    solv_setcloexec(store->pagefd, 1);
 
 #ifdef DEBUG_PAGING
   fprintf(stderr, "can %sseek\n", can_seek ? "" : "NOT ");

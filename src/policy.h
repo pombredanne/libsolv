@@ -21,6 +21,7 @@ extern "C" {
 #define POLICY_MODE_SUGGEST	2
 #define POLICY_MODE_CHOOSE_NOREORDER	3	/* internal, do not use */
 #define POLICY_MODE_SUPPLEMENT	4	/* internal, do not use */
+#define POLICY_MODE_FAVOR_REC	(1 << 30)	/* internal, do not use */
 
 
 #define POLICY_ILLEGAL_DOWNGRADE	1
@@ -37,6 +38,8 @@ extern const char *policy_illegal2str(Solver *solv, int illegal, Solvable *s, So
 extern void policy_update_recommendsmap(Solver *solv);
 
 extern void policy_create_obsolete_index(Solver *solv);
+
+extern void pool_best_solvables(Pool *pool, Queue *plist, int flags);
 
 /* internal, do not use */
 extern void prune_to_best_version(Pool *pool, Queue *plist);

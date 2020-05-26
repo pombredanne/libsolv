@@ -10,6 +10,7 @@ SOLV_1.0 {
 		repo_add_arch_repo;
 		repo_add_autopattern;
 		repo_add_code11_products;
+		repo_add_conda;
 		repo_add_content;
 		repo_add_comps;
 		repo_add_cudf;
@@ -41,14 +42,17 @@ SOLV_1.0 {
 		repo_add_zyppdb_products;
 		repo_find_all_pubkeys;
 		repo_find_pubkey;
+		repo_mark_retracted_packages;
 		repo_verify_sigdata;
 		rpm_byfp;
 		rpm_byrpmdbid;
 		rpm_byrpmh;
+		rpm_hash_database_state;
 		rpm_installedrpmdbids;
 		rpm_iterate_filelist;
 		rpm_query;
 		rpm_query_num;
+		rpm_stat_database;
 		rpm_state_create;
 		rpm_state_free;
 		solv_verify_sig;

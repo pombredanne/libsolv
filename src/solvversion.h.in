@@ -27,6 +27,7 @@ extern int solv_version_patch;
 #cmakedefine LIBSOLV_FEATURE_LINKED_PKGS
 #cmakedefine LIBSOLV_FEATURE_COMPLEX_DEPS
 #cmakedefine LIBSOLV_FEATURE_MULTI_SEMANTICS
+#cmakedefine LIBSOLV_FEATURE_CONDA
 
 #cmakedefine LIBSOLVEXT_FEATURE_RPMPKG
 #cmakedefine LIBSOLVEXT_FEATURE_RPMDB
@@ -43,6 +44,8 @@ extern int solv_version_patch;
 #cmakedefine LIBSOLVEXT_FEATURE_ZLIB_COMPRESSION
 #cmakedefine LIBSOLVEXT_FEATURE_LZMA_COMPRESSION
 #cmakedefine LIBSOLVEXT_FEATURE_BZIP2_COMPRESSION
+#cmakedefine LIBSOLVEXT_FEATURE_ZSTD_COMPRESSION
+#cmakedefine LIBSOLVEXT_FEATURE_ZCHUNK_COMPRESSION
 
 /* see tools/common_write.c for toolversion history */
 #define LIBSOLV_TOOLVERSION "1.1"

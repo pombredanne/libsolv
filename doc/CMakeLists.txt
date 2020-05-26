@@ -4,7 +4,7 @@ SET (libsolv_MANPAGES3
     libsolv-pool.3)
 
 SET (libsolv_MANPAGES1
-    mergesolv.1 dumpsolv.1 installcheck.1 testsolv.1)
+    mergesolv.1 dumpsolv.1 installcheck.1 testsolv.1 repo2solv.1 solv.1)
 
 IF (ENABLE_RPMDB)
 SET (libsolv_MANPAGES1 ${libsolv_MANPAGES1} rpmdb2solv.1 rpms2solv.1)
@@ -42,10 +42,14 @@ IF (ENABLE_APPDATA)
 SET (libsolv_MANPAGES1 ${libsolv_MANPAGES1} appdata2solv.1)
 ENDIF (ENABLE_APPDATA)
 
+# prepend gen directory
+STRING(REGEX REPLACE "([^;]+)" "gen/\\1" libsolv_MANPAGES1 "${libsolv_MANPAGES1}")
+STRING(REGEX REPLACE "([^;]+)" "gen/\\1" libsolv_MANPAGES3 "${libsolv_MANPAGES3}")
+
 INSTALL(FILES
     ${libsolv_MANPAGES3}
-    DESTINATION "${MAN_INSTALL_DIR}/man3")
+    DESTINATION "${CMAKE_INSTALL_MANDIR}/man3")
 
 INSTALL(FILES
     ${libsolv_MANPAGES1}
-    DESTINATION "${MAN_INSTALL_DIR}/man1")
+    DESTINATION "${CMAKE_INSTALL_MANDIR}/man1")

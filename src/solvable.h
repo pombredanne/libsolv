@@ -23,15 +23,15 @@
 extern "C" {
 #endif
 
-struct _Repo;
+struct s_Repo;
 
-typedef struct _Solvable {
+typedef struct s_Solvable {
   Id name;
   Id arch;
   Id evr;			/* epoch:version-release */
   Id vendor;
 
-  struct _Repo *repo;		/* repo we belong to */
+  struct s_Repo *repo;		/* repo we belong to */
 
   /* dependencies are offsets into repo->idarraydata */
   Offset provides;		/* terminated with Id 0 */
@@ -51,7 +51,7 @@ typedef struct _Solvable {
 Id solvable_lookup_type(Solvable *s, Id keyname);
 Id solvable_lookup_id(Solvable *s, Id keyname);
 unsigned long long solvable_lookup_num(Solvable *s, Id keyname, unsigned long long notfound);
-unsigned int solvable_lookup_sizek(Solvable *s, Id keyname, unsigned int notfound);
+unsigned long long solvable_lookup_sizek(Solvable *s, Id keyname, unsigned long long notfound);
 const char *solvable_lookup_str(Solvable *s, Id keyname);
 const char *solvable_lookup_str_poollang(Solvable *s, Id keyname);
 const char *solvable_lookup_str_lang(Solvable *s, Id keyname, const char *lang, int usebase);
@@ -64,6 +64,7 @@ const unsigned char *solvable_lookup_bin_checksum(Solvable *s, Id keyname, Id *t
 const char *solvable_lookup_checksum(Solvable *s, Id keyname, Id *typep);
 int solvable_lookup_idarray(Solvable *s, Id keyname, Queue *q);
 int solvable_lookup_deparray(Solvable *s, Id keyname, Queue *q, Id marker);
+unsigned int solvable_lookup_count(Solvable *s, Id keyname);	/* internal */
 
 /* setter functions */
 void solvable_set_id(Solvable *s, Id keyname, Id id);
@@ -79,13 +80,19 @@ void solvable_unset(Solvable *s, Id keyname);
 
 int solvable_identical(Solvable *s1, Solvable *s2);
 Id solvable_selfprovidedep(Solvable *s);
+
 int solvable_matchesdep(Solvable *s, Id keyname, Id dep, int marker);
+int solvable_matchessolvable(Solvable *s, Id keyname, Id solvid, Queue *depq, int marker);
+
+/* internal */
+int solvable_matchessolvable_int(Solvable *s, Id keyname, int marker, Id solvid, Map *solvidmap, Queue *depq, Map *missc, int reloff, Queue *outdepq);
+
 
 /* weird suse stuff */
 int solvable_is_irrelevant_patch(Solvable *s, Map *installedmap);
 int solvable_trivial_installable_map(Solvable *s, Map *installedmap, Map *conflictsmap, Map *multiversionmap);
 int solvable_trivial_installable_queue(Solvable *s, Queue *installed, Map *multiversionmap);
-int solvable_trivial_installable_repo(Solvable *s, struct _Repo *installed, Map *multiversionmap);
+int solvable_trivial_installable_repo(Solvable *s, struct s_Repo *installed, Map *multiversionmap);
 
 #ifdef __cplusplus
 }

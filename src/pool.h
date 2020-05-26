@@ -36,13 +36,13 @@ extern "C" {
 
 /*----------------------------------------------- */
 
-struct _Repo;
-struct _Repodata;
-struct _Repokey;
-struct _KeyValue;
+struct s_Repo;
+struct s_Repodata;
+struct s_Repokey;
+struct s_KeyValue;
 
-typedef struct _Datapos {
-  struct _Repo *repo;
+typedef struct s_Datapos {
+  struct s_Repo *repo;
   Id solvid;
   Id repodataid;
   Id schema;
@@ -55,7 +55,7 @@ typedef struct _Datapos {
 /* how many strings to maintain (round robin) */
 #define POOL_TMPSPACEBUF 16
 
-struct _Pool_tmpspace {
+struct s_Pool_tmpspace {
   char *buf[POOL_TMPSPACEBUF];
   int   len[POOL_TMPSPACEBUF];
   int   n;
@@ -63,19 +63,19 @@ struct _Pool_tmpspace {
 
 #endif
 
-struct _Pool {
+struct s_Pool {
   void *appdata;		/* application private pointer */
 
-  struct _Stringpool ss;
+  struct s_Stringpool ss;
 
   Reldep *rels;			/* table of rels: Id -> Reldep */
   int nrels;			/* number of unique rels */
 
-  struct _Repo **repos;
+  struct s_Repo **repos;
   int nrepos;			/* repos allocated */
   int urepos;			/* repos in use */
 
-  struct _Repo *installed; 	/* packages considered installed */
+  struct s_Repo *installed; 	/* packages considered installed */
 
   Solvable *solvables;
   int nsolvables;		/* solvables allocated */
@@ -88,7 +88,7 @@ struct _Pool {
 
   Id *id2arch;			/* map arch ids to scores */
   unsigned char *id2color;	/* map arch ids to colors */
-  Id lastarch;			/* last valid entry in id2arch/id2color */
+  Id lastarch;			/* size of the id2arch/id2color arrays */
 
   Queue vendormap;		/* map vendor to vendorclasses mask */
   const char **vendorclasses;	/* vendor equivalence classes */
@@ -109,16 +109,16 @@ struct _Pool {
   Map *considered;
 
   /* callback for REL_NAMESPACE dependencies handled by the application  */
-  Id (*nscallback)(struct _Pool *, void *data, Id name, Id evr);
+  Id (*nscallback)(struct s_Pool *, void *data, Id name, Id evr);
   void *nscallbackdata;
 
   /* debug mask and callback */
   int  debugmask;
-  void (*debugcallback)(struct _Pool *, void *data, int type, const char *str);
+  void (*debugcallback)(struct s_Pool *, void *data, int type, const char *str);
   void *debugcallbackdata;
 
   /* load callback */
-  int (*loadcallback)(struct _Pool *, struct _Repodata *, void *);
+  int (*loadcallback)(struct s_Pool *, struct s_Repodata *, void *);
   void *loadcallbackdata;
 
   /* search position */
@@ -148,14 +148,14 @@ struct _Pool {
   int languagecacheother;
 
   /* our tmp space string space */
-  struct _Pool_tmpspace tmpspace;
+  struct s_Pool_tmpspace tmpspace;
 
   char *errstr;			/* last error string */
   int errstra;			/* allocated space for errstr */
 
   char *rootdir;
 
-  int (*custom_vendorcheck)(struct _Pool *, Solvable *, Solvable *);
+  int (*custom_vendorcheck)(struct s_Pool *, Solvable *, Solvable *);
 
   int addfileprovidesfiltered;	/* 1: only use filtered file list for addfileprovides */
   int addedfileprovides;	/* true: application called addfileprovides */
@@ -166,6 +166,7 @@ struct _Pool {
   Id *whatprovidesauxdata;
   Offset whatprovidesauxdataoff;
 
+  int whatprovideswithdisabled;
 #endif
 };
 
@@ -173,6 +174,7 @@ struct _Pool {
 #define DISTTYPE_DEB	1
 #define DISTTYPE_ARCH   2
 #define DISTTYPE_HAIKU  3
+#define DISTTYPE_CONDA  4
 
 #define SOLV_FATAL			(1<<0)
 #define SOLV_ERROR			(1<<1)
@@ -188,6 +190,7 @@ struct _Pool {
 #define SOLV_DEBUG_JOB			(1<<11)
 #define SOLV_DEBUG_SOLVER		(1<<12)
 #define SOLV_DEBUG_TRANSACTION		(1<<13)
+#define SOLV_DEBUG_WATCHES		(1<<14)
 
 #define SOLV_DEBUG_TO_STDERR		(1<<30)
 
@@ -202,6 +205,7 @@ struct _Pool {
 #define POOL_FLAG_ADDFILEPROVIDESFILTERED		9
 #define POOL_FLAG_IMPLICITOBSOLETEUSESCOLORS		10
 #define POOL_FLAG_NOWHATPROVIDESAUX			11
+#define POOL_FLAG_WHATPROVIDESWITHDISABLED		12
 
 /* ----------------------------------------------- */
 
@@ -223,11 +227,15 @@ struct _Pool {
 #define REL_NAMESPACE	19
 #define REL_ARCH	20
 #define REL_FILECONFLICT	21
-#define REL_COND	22
+#define REL_COND	22	/* OR_NOT */
 #define REL_COMPAT	23
 #define REL_KIND	24	/* for filters only */
 #define REL_MULTIARCH	25	/* debian multiarch annotation */
-#define REL_ELSE	26	/* only as evr part of REL_COND */
+#define REL_ELSE	26	/* only as evr part of REL_COND/REL_UNLESS */
+#define REL_ERROR	27	/* parse errors and the like */
+#define REL_WITHOUT	28
+#define REL_UNLESS	29	/* AND_NOT */
+#define REL_CONDA	30
 
 #if !defined(__GNUC__) && !defined(__attribute__)
 # define __attribute__(x)
@@ -243,13 +251,13 @@ extern int  pool_set_flag(Pool *pool, int flag, int value);
 extern int  pool_get_flag(Pool *pool, int flag);
 
 extern void pool_debug(Pool *pool, int type, const char *format, ...) __attribute__((format(printf, 3, 4)));
-extern void pool_setdebugcallback(Pool *pool, void (*debugcallback)(struct _Pool *, void *data, int type, const char *str), void *debugcallbackdata);
+extern void pool_setdebugcallback(Pool *pool, void (*debugcallback)(struct s_Pool *, void *data, int type, const char *str), void *debugcallbackdata);
 extern void pool_setdebugmask(Pool *pool, int mask);
-extern void pool_setloadcallback(Pool *pool, int (*cb)(struct _Pool *, struct _Repodata *, void *), void *loadcbdata);
-extern void pool_setnamespacecallback(Pool *pool, Id (*cb)(struct _Pool *, void *, Id, Id), void *nscbdata);
+extern void pool_setloadcallback(Pool *pool, int (*cb)(struct s_Pool *, struct s_Repodata *, void *), void *loadcbdata);
+extern void pool_setnamespacecallback(Pool *pool, Id (*cb)(struct s_Pool *, void *, Id, Id), void *nscbdata);
 extern void pool_flush_namespaceproviders(Pool *pool, Id ns, Id evr);
 
-extern void pool_set_custom_vendorcheck(Pool *pool, int (*vendorcheck)(struct _Pool *, Solvable *, Solvable *));
+extern void pool_set_custom_vendorcheck(Pool *pool, int (*vendorcheck)(struct s_Pool *, Solvable *, Solvable *));
 
 
 extern char *pool_alloctmpspace(Pool *pool, int len);
@@ -258,7 +266,7 @@ extern char *pool_tmpjoin(Pool *pool, const char *str1, const char *str2, const 
 extern char *pool_tmpappend(Pool *pool, const char *str1, const char *str2, const char *str3);
 extern const char *pool_bin2hex(Pool *pool, const unsigned char *buf, int len);
 
-extern void pool_set_installed(Pool *pool, struct _Repo *repo);
+extern void pool_set_installed(Pool *pool, struct s_Repo *repo);
 
 extern int  pool_error(Pool *pool, int ret, const char *format, ...) __attribute__((format(printf, 3, 4)));
 extern char *pool_errstr(Pool *pool);
@@ -278,6 +286,10 @@ extern void pool_free_solvable_block(Pool *pool, Id start, int count, int reusei
 static inline Solvable *pool_id2solvable(const Pool *pool, Id p)
 {
   return pool->solvables + p;
+}
+static inline Id pool_solvable2id(const Pool *pool, Solvable *s)
+{
+  return s - pool->solvables;
 }
 
 extern const char *pool_solvable2str(Pool *pool, Solvable *s);
@@ -341,13 +353,16 @@ static inline Id *pool_whatprovides_ptr(Pool *pool, Id d)
 
 void pool_whatmatchesdep(Pool *pool, Id keyname, Id dep, Queue *q, int marker);
 void pool_whatcontainsdep(Pool *pool, Id keyname, Id dep, Queue *q, int marker);
+void pool_whatmatchessolvable(Pool *pool, Id keyname, Id solvid, Queue *q, int marker);
+void pool_set_whatprovides(Pool *pool, Id id, Id providers);
+
 
 /* search the pool. the following filters are available:
  *   p     - search just this solvable
  *   key   - search only this key
  *   match - key must match this string
  */
-void pool_search(Pool *pool, Id p, Id key, const char *match, int flags, int (*callback)(void *cbdata, Solvable *s, struct _Repodata *data, struct _Repokey *key, struct _KeyValue *kv), void *cbdata);
+void pool_search(Pool *pool, Id p, Id key, const char *match, int flags, int (*callback)(void *cbdata, Solvable *s, struct s_Repodata *data, struct s_Repokey *key, struct s_KeyValue *kv), void *cbdata);
 
 void pool_clear_pos(Pool *pool);
 
@@ -364,17 +379,17 @@ const char *pool_lookup_deltalocation(Pool *pool, Id entry, unsigned int *median
 
 #define DUCHANGES_ONLYADD	1
 
-typedef struct _DUChanges {
+typedef struct s_DUChanges {
   const char *path;
-  int kbytes;
-  int files;
+  long long kbytes;
+  long long files;
   int flags;
 } DUChanges;
 
 
 void pool_create_state_maps(Pool *pool, Queue *installed, Map *installedmap, Map *conflictsmap);
 void pool_calc_duchanges(Pool *pool, Map *installedmap, DUChanges *mps, int nmps);
-int  pool_calc_installsizechange(Pool *pool, Map *installedmap);
+long long pool_calc_installsizechange(Pool *pool, Map *installedmap);
 
 void pool_add_fileconflicts_deps(Pool *pool, Queue *conflicts);
 
@@ -396,11 +411,6 @@ void pool_add_fileconflicts_deps(Pool *pool, Queue *conflicts);
     if (pool->solvables[p].repo == 0)					\
       continue;								\
     else
-
-#ifdef ENABLE_COMPS
-#define ISCONDDEP(id) (ISRELDEP(id) && (GETRELDEP(pool, id))->flags == REL_COND)
-#define MODIFYCONDDEP(id, tst) do { Reldep *condrd = GETRELDEP(pool, id); Id condp, condpp; FOR_PROVIDES(condrd->evr, condp, condpp) if (tst) break; id = condp ? condrd->name : 0;} while(0)
-#endif
 
 #define POOL_DEBUG(type, ...) do {if ((pool->debugmask & (type)) != 0) pool_debug(pool, (type), __VA_ARGS__);} while (0)
 #define IF_POOLDEBUG(type) if ((pool->debugmask & (type)) != 0)

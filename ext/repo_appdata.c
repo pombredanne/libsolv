@@ -103,7 +103,7 @@ startElement(struct solv_xmlparser *xmlp, int state, const char *name, const cha
 {
   struct parsedata *pd = xmlp->userdata;
   Pool *pool = pd->pool;
-  Solvable *s = pd->solvable;
+  Solvable *s;
   const char *type;
 
   /* ignore all language tags */
@@ -420,19 +420,6 @@ endElement(struct solv_xmlparser *xmlp, int state, char *content)
     }
 }
 
-static void
-errorCallback(struct solv_xmlparser *xmlp, const char *errstr, unsigned int line, unsigned int column)
-{
-  struct parsedata *pd = xmlp->userdata;
-  pool_debug(pd->pool, SOLV_ERROR, "repo_appdata: %s at line %u:%u\n", errstr, line, column);
-  pd->ret = -1;
-  if (pd->solvable)
-    {   
-      repo_free_solvable(pd->repo, pd->solvable - pd->pool->solvables, 1); 
-      pd->solvable = 0;
-    }
-}
-
 static int
 repo_add_appdata_fn(Repo *repo, FILE *fp, int flags, const char *filename, Queue *owners)
 {
@@ -448,8 +435,13 @@ repo_add_appdata_fn(Repo *repo, FILE *fp, int flags, const char *filename, Queue
   pd.filename = filename;
   pd.owners = owners;
 
-  solv_xmlparser_init(&pd.xmlp, stateswitches, &pd, startElement, endElement, errorCallback);
-  solv_xmlparser_parse(&pd.xmlp, fp);
+  solv_xmlparser_init(&pd.xmlp, stateswitches, &pd, startElement, endElement);
+  if (solv_xmlparser_parse(&pd.xmlp, fp) != SOLV_XMLPARSER_OK)
+    {
+      pool_debug(pd.pool, SOLV_ERROR, "repo_appdata: %s at line %u:%u\n", pd.xmlp.errstr, pd.xmlp.line, pd.xmlp.column);
+      pd.ret = -1;
+      pd.solvable = solvable_free(pd.solvable, 1);
+    }
   solv_xmlparser_free(&pd.xmlp);
 
   solv_free(pd.desktop_file);
@@ -467,13 +459,40 @@ repo_add_appdata(Repo *repo, FILE *fp, int flags)
   return repo_add_appdata_fn(repo, fp, flags, 0, 0);
 }
 
+struct uninternalized_filelist_data {
+  Id did;
+  Queue *res;
+};
+
+static int
+search_uninternalized_filelist_cb(void *cbdata, Solvable *s, Repodata *data, Repokey *key, KeyValue *kv)
+{
+  struct uninternalized_filelist_data *uf = cbdata;
+  const char *str;
+  Id id;
+  size_t l;
+  if (key->type != REPOKEY_TYPE_DIRSTRARRAY || kv->id != uf->did)
+    return 0;
+  str = kv->str;
+  l = strlen(str);
+  if (l > 12 && strncmp(str + l - 12, ".appdata.xml", 12))
+    id = pool_str2id(data->repo->pool, str, 1);
+  else if (l > 13 && strncmp(str + l - 13, ".metainfo.xml", 13))
+    id = pool_str2id(data->repo->pool, str, 1);
+  else
+    return 0;
+  queue_push2(uf->res, s - data->repo->pool->solvables, id);
+  return 0;
+}
+
 static void
 search_uninternalized_filelist(Repo *repo, const char *dir, Queue *res)
 {
   Pool *pool = repo->pool;
-  Id rdid, p;
-  Id iter, did, idid;
+  Id did, rdid, p;
+  struct uninternalized_filelist_data uf;
 
+  uf.res = res;
   for (rdid = 1; rdid < repo->nrepodata; rdid++)
     {
       Repodata *data = repo_id2repodata(repo, rdid);
@@ -486,31 +505,12 @@ search_uninternalized_filelist(Repo *repo, const char *dir, Queue *res)
       did = repodata_str2dir(data, dir, 0);
       if (!did)
 	continue;
+      uf.did = did;
       for (p = data->start; p < data->end; p++)
 	{
-	  if (p >= pool->nsolvables)
+	  if (p >= pool->nsolvables || pool->solvables[p].repo != repo)
 	    continue;
-	  if (pool->solvables[p].repo != repo)
-	    continue;
-	  iter = 0;
-	  for (;;)
-	    {
-	      const char *str;
-	      int l;
-	      Id id;
-	      idid = did;
-	      str = repodata_lookup_dirstrarray_uninternalized(data, p, SOLVABLE_FILELIST, &idid, &iter);
-	      if (!iter)
-		break;
-	      l = strlen(str);
-	      if (l > 12 && strncmp(str + l - 12, ".appdata.xml", 12))
-		id = pool_str2id(pool, str, 1);
-	      else if (l > 13 && strncmp(str + l - 13, ".metainfo.xml", 13))
-		id = pool_str2id(pool, str, 1);
-	      else
-		continue;
-	      queue_push2(res, p, id);
-	    }
+	  repodata_search_uninternalized(data, p, SOLVABLE_FILELIST, 0, search_uninternalized_filelist_cb, &uf);
 	}
     }
 }

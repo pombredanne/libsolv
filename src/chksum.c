@@ -19,7 +19,11 @@
 #include "sha1.h"
 #include "sha2.h"
 
-struct _Chksum {
+#ifdef _WIN32
+  #include "strfncs.h"
+#endif
+
+struct s_Chksum {
   Id type;
   int done;
   unsigned char result[64];

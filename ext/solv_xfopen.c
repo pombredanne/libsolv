@@ -12,9 +12,14 @@
 #include <string.h>
 #include <fcntl.h>
 
+#ifdef _WIN32
+  #include "fmemopen.c"
+#endif
+
 #include "solv_xfopen.h"
 #include "util.h"
 
+#ifndef WITHOUT_COOKIEOPEN
 
 static FILE *cookieopen(void *cookie, const char *mode,
 	ssize_t (*cread)(void *, char *, size_t),
@@ -56,7 +61,15 @@ static FILE *cookieopen(void *cookie, const char *mode,
 
 static ssize_t cookie_gzread(void *cookie, char *buf, size_t nbytes)
 {
-  return gzread((gzFile)cookie, buf, nbytes);
+  ssize_t r = gzread((gzFile)cookie, buf, nbytes);
+  if (r == 0)
+    {
+      int err = 0;
+      gzerror((gzFile)cookie, &err);
+      if (err == Z_BUF_ERROR)
+	r = -1;
+    }
+  return r;
 }
 
 static ssize_t cookie_gzwrite(void *cookie, const char *buf, size_t nbytes)
@@ -316,6 +329,302 @@ static inline FILE *mylzfdopen(int fd, const char *mode)
 
 #endif /* ENABLE_LZMA_COMPRESSION */
 
+#ifdef ENABLE_ZSTD_COMPRESSION
+
+#include <zstd.h>
+
+typedef struct zstdfile {
+  ZSTD_CStream *cstream;
+  ZSTD_DStream *dstream;
+  FILE *file;
+  int encoding;
+  int eof;
+  ZSTD_inBuffer in;
+  ZSTD_outBuffer out;
+  unsigned char buf[1 << 15];
+} ZSTDFILE;
+
+static ZSTDFILE *zstdopen(const char *path, const char *mode, int fd)
+{
+  int level = 7;
+  int encoding = 0;
+  FILE *fp;
+  ZSTDFILE *zstdfile;
+
+  if (!path && fd < 0)
+    return 0;
+  for (; *mode; mode++)
+    {
+      if (*mode == 'w')
+	encoding = 1;
+      else if (*mode == 'r')
+	encoding = 0;
+      else if (*mode >= '1' && *mode <= '9')
+	level = *mode - '0';
+    }
+  if (fd != -1)
+    fp = fdopen(fd, encoding ? "w" : "r");
+  else
+    fp = fopen(path, encoding ? "w" : "r");
+  if (!fp)
+    return 0;
+  zstdfile = solv_calloc(1, sizeof(*zstdfile));
+  zstdfile->encoding = encoding;
+  if (encoding)
+    {
+      zstdfile->cstream = ZSTD_createCStream();
+      zstdfile->encoding = 1;
+      if (!zstdfile->cstream)
+	{
+	  solv_free(zstdfile);
+	  fclose(fp);
+	  return 0;
+	}
+      if (ZSTD_isError(ZSTD_initCStream(zstdfile->cstream, level)))
+ 	{
+	  ZSTD_freeCStream(zstdfile->cstream);
+	  solv_free(zstdfile);
+	  fclose(fp);
+	  return 0;
+	}
+      zstdfile->out.dst = zstdfile->buf;
+      zstdfile->out.pos = 0;
+      zstdfile->out.size = sizeof(zstdfile->buf);
+    }
+  else
+    {
+      zstdfile->dstream = ZSTD_createDStream();
+      if (ZSTD_isError(ZSTD_initDStream(zstdfile->dstream)))
+ 	{
+	  ZSTD_freeDStream(zstdfile->dstream);
+	  solv_free(zstdfile);
+	  fclose(fp);
+	  return 0;
+	}
+      zstdfile->in.src = zstdfile->buf;
+      zstdfile->in.pos = 0;
+      zstdfile->in.size = 0;
+    }
+  zstdfile->file = fp;
+  return zstdfile;
+}
+
+static int zstdclose(void *cookie)
+{
+  ZSTDFILE *zstdfile = cookie;
+  int rc;
+
+  if (!zstdfile)
+    return -1;
+  if (zstdfile->encoding)
+    {
+      for (;;)
+	{
+	  size_t ret;
+	  zstdfile->out.pos = 0;
+	  ret = ZSTD_endStream(zstdfile->cstream, &zstdfile->out);
+	  if (ZSTD_isError(ret))
+	    return -1;
+	  if (zstdfile->out.pos && fwrite(zstdfile->buf, 1, zstdfile->out.pos, zstdfile->file) != zstdfile->out.pos)
+	    return -1;
+	  if (ret == 0)
+	    break;
+	}
+      ZSTD_freeCStream(zstdfile->cstream);
+    }
+  else
+    {
+      ZSTD_freeDStream(zstdfile->dstream);
+    }
+  rc = fclose(zstdfile->file);
+  free(zstdfile);
+  return rc;
+}
+
+static ssize_t zstdread(void *cookie, char *buf, size_t len)
+{
+  ZSTDFILE *zstdfile = cookie;
+  int eof = 0;
+  size_t ret = 0;
+  if (!zstdfile || zstdfile->encoding)
+    return -1;
+  if (zstdfile->eof)
+    return 0;
+  zstdfile->out.dst = buf;
+  zstdfile->out.pos = 0;
+  zstdfile->out.size = len;
+  for (;;)
+    {
+      if (!eof && zstdfile->in.pos == zstdfile->in.size)
+	{
+	  zstdfile->in.pos = 0;
+	  zstdfile->in.size = fread(zstdfile->buf, 1, sizeof(zstdfile->buf), zstdfile->file);
+	  if (!zstdfile->in.size)
+	    eof = 1;
+	}
+      if (ret || !eof)
+        ret = ZSTD_decompressStream(zstdfile->dstream, &zstdfile->out, &zstdfile->in);
+      if (ret == 0 && eof)
+	{
+	  zstdfile->eof = 1;
+	  return zstdfile->out.pos;
+	}
+      if (ZSTD_isError(ret))
+	return -1;
+      if (zstdfile->out.pos == len)
+	return len;
+    }
+}
+
+static ssize_t zstdwrite(void *cookie, const char *buf, size_t len)
+{
+  ZSTDFILE *zstdfile = cookie;
+  if (!zstdfile || !zstdfile->encoding)
+    return -1;
+  if (!len)
+    return 0;
+  zstdfile->in.src = buf;
+  zstdfile->in.pos = 0;
+  zstdfile->in.size = len;
+
+  for (;;)
+    {
+      size_t ret;
+      zstdfile->out.pos = 0;
+      ret = ZSTD_compressStream(zstdfile->cstream, &zstdfile->out, &zstdfile->in);
+      if (ZSTD_isError(ret))
+        return -1;
+      if (zstdfile->out.pos && fwrite(zstdfile->buf, 1, zstdfile->out.pos, zstdfile->file) != zstdfile->out.pos)
+        return -1;
+      if (zstdfile->in.pos == len)
+        return len;
+    }
+}
+
+static inline FILE *myzstdfopen(const char *fn, const char *mode)
+{
+  ZSTDFILE *zstdfile = zstdopen(fn, mode, -1);
+  return cookieopen(zstdfile, mode, zstdread, zstdwrite, zstdclose);
+}
+
+static inline FILE *myzstdfdopen(int fd, const char *mode)
+{
+  ZSTDFILE *zstdfile = zstdopen(0, mode, fd);
+  return cookieopen(zstdfile, mode, zstdread, zstdwrite, zstdclose);
+}
+
+#endif
+
+#ifdef ENABLE_ZCHUNK_COMPRESSION
+
+#ifdef WITH_SYSTEM_ZCHUNK
+/* use the system's zchunk library that supports reading and writing of zchunk files */
+
+#include <zck.h>
+
+static ssize_t cookie_zckread(void *cookie, char *buf, size_t nbytes)
+{
+  return zck_read((zckCtx *)cookie, buf, nbytes);
+}
+
+static ssize_t cookie_zckwrite(void *cookie, const char *buf, size_t nbytes)
+{
+  return zck_write((zckCtx *)cookie, buf, nbytes);
+}
+
+static int cookie_zckclose(void *cookie)
+{
+  zckCtx *zck = (zckCtx *)cookie;
+  int fd = zck_get_fd(zck);
+  if (fd != -1)
+    close(fd);
+  zck_free(&zck);
+  return 0;
+}
+
+static void *zchunkopen(const char *path, const char *mode, int fd)
+{
+  zckCtx *f;
+
+  if (!path && fd < 0)
+    return 0;
+  if (fd == -1)
+    {
+      if (*mode != 'w')
+        fd = open(path, O_RDONLY);
+      else
+        fd = open(path, O_WRONLY | O_CREAT, 0666);
+      if (fd == -1)
+	return 0;
+    }
+  f = zck_create();
+  if (!f)
+    {
+      close(fd);
+      return 0;
+    }
+  if (*mode != 'w')
+    {
+      if(!zck_init_read(f, fd))
+        return 0;
+    }
+   else
+    {
+      if(!zck_init_write(f, fd))
+        return 0;
+    }
+  return cookieopen(f, mode, cookie_zckread, cookie_zckwrite, cookie_zckclose);
+}
+
+#else
+
+#include "solv_zchunk.h"
+/* use the libsolv's limited zchunk implementation that only supports reading of zchunk files */
+
+static void *zchunkopen(const char *path, const char *mode, int fd)
+{
+  FILE *fp;
+  void *f;
+  if (!path && fd < 0)
+    return 0;
+  if (fd != -1)
+    fp = fdopen(fd, mode);
+  else
+    fp = fopen(path, mode);
+  if (!fp)
+    return 0;
+  if (strcmp(mode, "r") != 0)
+    return 0;
+  f = solv_zchunk_open(fp, 1);
+  if (!f)
+    fclose(fp);
+  return cookieopen(f, mode, (ssize_t (*)(void *, char *, size_t))solv_zchunk_read, 0, (int (*)(void *))solv_zchunk_close);
+}
+
+#endif
+
+static inline FILE *myzchunkfopen(const char *fn, const char *mode)
+{
+  return zchunkopen(fn, mode, -1);
+}
+
+static inline FILE *myzchunkfdopen(int fd, const char *mode)
+{
+  return zchunkopen(0, mode, fd);
+}
+
+#endif /* ENABLE_ZCHUNK_COMPRESSION */
+
+#else
+/* no cookies no compression */
+#undef ENABLE_ZLIB_COMPRESSION
+#undef ENABLE_LZMA_COMPRESSION
+#undef ENABLE_BZIP2_COMPRESSION
+#undef ENABLE_ZSTD_COMPRESSION
+#undef ENABLE_ZCHUNK_COMPRESSION
+#endif
+
+
 
 FILE *
 solv_xfopen(const char *fn, const char *mode)
@@ -352,6 +661,20 @@ solv_xfopen(const char *fn, const char *mode)
   if (suf && !strcmp(suf, ".bz2"))
     return 0;
 #endif
+#ifdef ENABLE_ZSTD_COMPRESSION
+  if (suf && !strcmp(suf, ".zst"))
+    return myzstdfopen(fn, mode);
+#else
+  if (suf && !strcmp(suf, ".zst"))
+    return 0;
+#endif
+#ifdef ENABLE_ZCHUNK_COMPRESSION
+  if (suf && !strcmp(suf, ".zck"))
+    return myzchunkfopen(fn, mode);
+#else
+  if (suf && !strcmp(suf, ".zck"))
+    return 0;
+#endif
   return fopen(fn, mode);
 }
 
@@ -364,7 +687,15 @@ solv_xfopen_fd(const char *fn, int fd, const char *mode)
   suf = fn ? strrchr(fn, '.') : 0;
   if (!mode)
     {
+      #ifndef _WIN32
       int fl = fcntl(fd, F_GETFL, 0);
+      #else
+      HANDLE handle = (HANDLE) _get_osfhandle(fd);
+      BY_HANDLE_FILE_INFORMATION file_info;
+      if (!GetFileInformationByHandle(handle, &file_info))
+        return 0;
+      int fl = file_info.dwFileAttributes;
+      #endif
       if (fl == -1)
 	return 0;
       fl &= O_RDONLY|O_WRONLY|O_RDWR;
@@ -382,8 +713,8 @@ solv_xfopen_fd(const char *fn, int fd, const char *mode)
   if (suf && !strcmp(suf, ".gz"))
     return mygzfdopen(fd, simplemode);
 #else
-    return 0;
   if (suf && !strcmp(suf, ".gz"))
+    return 0;
 #endif
 #ifdef ENABLE_LZMA_COMPRESSION
   if (suf && !strcmp(suf, ".xz"))
@@ -401,6 +732,20 @@ solv_xfopen_fd(const char *fn, int fd, const char *mode)
     return mybzfdopen(fd, simplemode);
 #else
   if (suf && !strcmp(suf, ".bz2"))
+    return 0;
+#endif
+#ifdef ENABLE_ZSTD_COMPRESSION
+  if (suf && !strcmp(suf, ".zst"))
+    return myzstdfdopen(fd, simplemode);
+#else
+  if (suf && !strcmp(suf, ".zst"))
+    return 0;
+#endif
+#ifdef ENABLE_ZCHUNK_COMPRESSION
+  if (suf && !strcmp(suf, ".zck"))
+    return myzchunkfdopen(fd, simplemode);
+#else
+  if (suf && !strcmp(suf, ".zck"))
     return 0;
 #endif
   return fdopen(fd, mode);
@@ -430,8 +775,23 @@ solv_xfopen_iscompressed(const char *fn)
 #else
     return -1;
 #endif
+  if (!strcmp(suf, ".zst"))
+#ifdef ENABLE_ZSTD_COMPRESSION
+    return 1;
+#else
+    return -1;
+#endif
+  if (!strcmp(suf, ".zck"))
+#ifdef ENABLE_ZCHUNK_COMPRESSION
+    return 1;
+#else
+    return -1;
+#endif
   return 0;
 }
+
+
+#ifndef WITHOUT_COOKIEOPEN
 
 struct bufcookie {
   char **bufp;
@@ -509,3 +869,33 @@ solv_xfopen_buf(const char *fn, char **bufp, size_t *buflp, const char *mode)
     }
   return fp;
 }
+
+#else
+
+FILE *
+solv_xfopen_buf(const char *fn, char **bufp, size_t *buflp, const char *mode)
+{
+  FILE *fp;
+  size_t l;
+  if (*mode != 'r')
+    return 0;
+  l = buflp ? *buflp : strlen(*bufp);
+  if (!strcmp(mode, "rf"))
+    {
+      if (!(fp = fmemopen(0, l, "r+")))
+	return 0;
+      if (l && fwrite(*bufp, l, 1, fp) != 1)
+	{
+	  fclose(fp);
+	  return 0;
+	}
+      solv_free(*bufp);
+      rewind(fp);
+    }
+  else
+    fp = fmemopen(*bufp, l, "r");
+  return fp;
+}
+
+#endif
+

@@ -15,6 +15,7 @@
 #include "pool.h"
 #include "poolarch.h"
 #include "poolvendor.h"
+#include "evr.h"
 #include "repo.h"
 #include "repo_solv.h"
 #include "solver.h"
@@ -23,9 +24,21 @@
 #include "testcase.h"
 #include "selection.h"
 #include "solv_xfopen.h"
+#if ENABLE_TESTCASE_HELIXREPO
+#include "ext/repo_helix.h"
+#endif
 
-#define DISABLE_JOIN2
-#include "tools_util.h"
+#ifdef _WIN32
+  #include <direct.h>
+#endif
+
+/* see repo_testcase.c */
+struct oplist {
+  Id flags;
+  const char *opname;
+};
+extern struct oplist oplist[];
+
 
 static struct job2str {
   Id job;
@@ -46,6 +59,7 @@ static struct job2str {
   { SOLVER_ALLOWUNINSTALL, "allowuninstall" },
   { SOLVER_FAVOR,          "favor" },
   { SOLVER_DISFAVOR,       "disfavor" },
+  { SOLVER_BLACKLIST,      "blacklist" },
   { 0, 0 }
 };
 
@@ -82,6 +96,9 @@ static struct resultflags2str {
   { TESTCASE_RESULT_RULES,		"rules" },
   { TESTCASE_RESULT_GENID,		"genid" },
   { TESTCASE_RESULT_REASON,		"reason" },
+  { TESTCASE_RESULT_CLEANDEPS,		"cleandeps" },
+  { TESTCASE_RESULT_JOBS,		"jobs" },
+  { TESTCASE_RESULT_USERINSTALLED,	"userinstalled" },
   { 0, 0 }
 };
 
@@ -116,6 +133,7 @@ static struct solverflags2str {
   { SOLVER_FLAG_FOCUS_BEST,                 "focusbest", 0 },
   { SOLVER_FLAG_STRONG_RECOMMENDS,          "strongrecommends", 0 },
   { SOLVER_FLAG_INSTALL_ALSO_UPDATES,       "installalsoupdates", 0 },
+  { SOLVER_FLAG_ONLY_NAMESPACE_RECOMMENDED, "onlynamespacerecommended", 0 },
   { 0, 0, 0 }
 };
 
@@ -135,6 +153,7 @@ static struct poolflags2str {
   { POOL_FLAG_NOOBSOLETESMULTIVERSION,      "noobsoletesmultiversion", 0 },
   { POOL_FLAG_ADDFILEPROVIDESFILTERED,      "addfileprovidesfiltered", 0 },
   { POOL_FLAG_NOWHATPROVIDESAUX,            "nowhatprovidesaux", 0 },
+  { POOL_FLAG_WHATPROVIDESWITHDISABLED,     "whatprovideswithdisabled", 0 },
   { 0, 0, 0 }
 };
 
@@ -146,6 +165,7 @@ static struct disttype2str {
   { DISTTYPE_DEB,  "deb" },
   { DISTTYPE_ARCH, "arch" },
   { DISTTYPE_HAIKU, "haiku" },
+  { DISTTYPE_CONDA, "conda" },
   { 0, 0 }
 };
 
@@ -165,6 +185,13 @@ static struct selflags2str {
   { SELECTION_NOCASE, "nocase" },
   { SELECTION_SOURCE_ONLY, "sourceonly" },
   { SELECTION_WITH_SOURCE, "withsource" },
+  { SELECTION_SKIP_KIND, "skipkind" },
+  { SELECTION_MATCH_DEPSTR, "depstr" },
+  { SELECTION_WITH_DISABLED, "withdisabled" },
+  { SELECTION_WITH_BADARCH, "withbadarch" },
+  { SELECTION_ADD, "add" },
+  { SELECTION_SUBTRACT, "subtract" },
+  { SELECTION_FILTER, "filter" },
   { 0, 0 }
 };
 
@@ -174,6 +201,9 @@ static const char *features[] = {
 #endif
 #ifdef ENABLE_COMPLEX_DEPS
   "complex_deps",
+#endif
+#if ENABLE_TESTCASE_HELIXREPO
+  "testcase_helixrepo",
 #endif
   0
 };
@@ -304,338 +334,6 @@ strqueue_diff(Strqueue *sq1, Strqueue *sq2, Strqueue *osq)
     strqueue_pushjoin(osq, "+", sq2->str[j++], 0);
 }
 
-
-static const char *
-testcase_id2str(Pool *pool, Id id, int isname)
-{
-  const char *s = pool_id2str(pool, id);
-  const char *ss;
-  char *s2, *s2p;
-  int bad = 0, paren = 0, parenbad = 0;
-
-  if (id == 0)
-    return "<NULL>";
-  if (id == 1)
-    return "\\00";
-  if (strchr("[(<=>!", *s))
-    bad++;
-  if (!strncmp(s, "namespace:", 10))
-    bad++;
-  for (ss = s + bad; *ss; ss++)
-    {
-      if (*ss == ' ' || *ss == '\\' || *(unsigned char *)ss < 32 || *ss == '(' || *ss == ')')
-        bad++;
-      if (*ss == '(')
-	paren = paren == 0 ? 1 : -1;
-      else if (*ss == ')')
-	{
-	  paren = paren == 1 ? 0 : -1;
-	  if (!paren)
-	    parenbad += 2;
-	}
-    }
-  if (isname && ss - s > 4 && !strcmp(ss - 4, ":any"))
-    bad++;
-  if (!paren && !(bad - parenbad))
-    return s;
-
-  /* we need escaping! */
-  s2 = s2p = pool_alloctmpspace(pool, strlen(s) + bad * 2 + 1);
-  if (!strncmp(s, "namespace:", 10))
-    {
-      strcpy(s2p, "namespace\\3a");
-      s2p += 12;
-      s += 10;
-    }
-  ss = s;
-  for (; *ss; ss++)
-    {
-      *s2p++ = *ss;
-      if ((ss == s && strchr("[(<=>!", *s)) || *ss == ' ' || *ss == '\\' || *(unsigned char *)ss < 32 || *ss == '(' || *ss == ')')
-	{
-	  s2p[-1] = '\\';
-	  solv_bin2hex((unsigned char *)ss, 1, s2p);
-	  s2p += 2;
-	}
-    }
-  *s2p = 0;
-  if (isname && s2p - s2 > 4 && !strcmp(s2p - 4, ":any"))
-    strcpy(s2p - 4, "\\3aany");
-  return s2;
-}
-
-struct oplist {
-  Id flags;
-  const char *opname;
-} oplist[] = {
-  { REL_EQ, "=" },
-  { REL_GT | REL_LT | REL_EQ, "<=>" },
-  { REL_LT | REL_EQ, "<=" },
-  { REL_GT | REL_EQ, ">=" },
-  { REL_GT, ">" },
-  { REL_GT | REL_LT, "<>" },
-  { REL_AND,   "&" },
-  { REL_OR ,   "|" },
-  { REL_WITH , "+" },
-  { REL_NAMESPACE , "<NAMESPACE>" },
-  { REL_ARCH,       "." },
-  { REL_MULTIARCH,  "<MULTIARCH>" },
-  { REL_FILECONFLICT,  "<FILECONFLICT>" },
-  { REL_COND,  "<IF>" },
-  { REL_COMPAT,  "compat >=" },
-  { REL_KIND,  "<KIND>" },
-  { REL_ELSE, "<ELSE>" },
-  { REL_LT, "<" },
-  { 0, 0 }
-};
-
-static const char *
-testcase_dep2str_complex(Pool *pool, Id id, int addparens)
-{
-  Reldep *rd;
-  char *s;
-  const char *s2;
-  int needparens;
-  struct oplist *op;
-
-  if (!ISRELDEP(id))
-    return testcase_id2str(pool, id, 1);
-  rd = GETRELDEP(pool, id);
-
-  /* check for special shortcuts */
-  if (rd->flags == REL_NAMESPACE && !ISRELDEP(rd->name) && !strncmp(pool_id2str(pool, rd->name), "namespace:", 10))
-    {
-      const char *ns = pool_id2str(pool, rd->name);
-      int nslen = strlen(ns);
-      /* special namespace formatting */
-      const char *evrs = testcase_dep2str_complex(pool, rd->evr, 0);
-      s = pool_tmpappend(pool, evrs, ns, "()");
-      memmove(s + nslen + 1, s, strlen(s) - nslen - 2);
-      memcpy(s, ns, nslen);
-      s[nslen] = '(';
-      return s;
-    }
-  if (rd->flags == REL_MULTIARCH && !ISRELDEP(rd->name) && rd->evr == ARCH_ANY)
-    {
-      /* special :any suffix */
-      const char *ns = testcase_id2str(pool, rd->name, 1);
-      return pool_tmpappend(pool, ns, ":any", 0);
-    }
-
-  needparens = 0;
-  if (ISRELDEP(rd->name))
-    {
-      Reldep *rd2 = GETRELDEP(pool, rd->name);
-      needparens = 1;
-      if (rd->flags > 7 && rd->flags != REL_COMPAT && rd2->flags && rd2->flags <= 7)
-	needparens = 0;
-    }
-  s = (char *)testcase_dep2str_complex(pool, rd->name, needparens);
-
-  if (addparens)
-    {
-      s = pool_tmpappend(pool, s, "(", 0);
-      memmove(s + 1, s, strlen(s + 1));
-      s[0] = '(';
-    }
-  for (op = oplist; op->flags; op++)
-    if (rd->flags == op->flags)
-      break;
-  if (op->flags)
-    {
-      s = pool_tmpappend(pool, s, " ", op->opname);
-      s = pool_tmpappend(pool, s, " ", 0);
-    }
-  else
-    {
-      char buf[64];
-      sprintf(buf, " <%u> ", rd->flags);
-      s = pool_tmpappend(pool, s, buf, 0);
-    }
-
-  needparens = 0;
-  if (ISRELDEP(rd->evr))
-    {
-      Reldep *rd2 = GETRELDEP(pool, rd->evr);
-      needparens = 1;
-      if (rd->flags > 7 && rd2->flags && rd2->flags <= 7)
-	needparens = 0;
-      if (rd->flags == REL_AND && rd2->flags == REL_AND)
-	needparens = 0;	/* chain */
-      if (rd->flags == REL_OR && rd2->flags == REL_OR)
-	needparens = 0;	/* chain */
-      if (rd->flags > 0 && rd->flags < 8 && rd2->flags == REL_COMPAT)
-	needparens = 0;	/* chain */
-    }
-  if (!ISRELDEP(rd->evr))
-    s2 = testcase_id2str(pool, rd->evr, 0);
-  else
-    s2 = testcase_dep2str_complex(pool, rd->evr, needparens);
-  if (addparens)
-    s = pool_tmpappend(pool, s, s2, ")");
-  else
-    s = pool_tmpappend(pool, s, s2, 0);
-  pool_freetmpspace(pool, s2);
-  return s;
-}
-
-const char *
-testcase_dep2str(Pool *pool, Id id)
-{
-  return testcase_dep2str_complex(pool, id, 0);
-}
-
-
-/* Convert a simple string. Also handle the :any suffix */
-static Id
-testcase_str2dep_simple(Pool *pool, const char **sp, int isname)
-{
-  int haveesc = 0;
-  int paren = 0;
-  int isany = 0;
-  Id id;
-  const char *s;
-  for (s = *sp; *s; s++)
-    {
-      if (*s == '\\')
-	haveesc++;
-      if (*s == ' ' || *(unsigned char *)s < 32)
-	break;
-      if (*s == '(')
-	paren++;
-      if (*s == ')' && paren-- <= 0)
-	break;
-    }
-  if (isname && s - *sp > 4 && !strncmp(s - 4, ":any", 4))
-    {
-      isany = 1;
-      s -= 4;
-    }
-  if (!haveesc)
-    {
-      if (s - *sp == 6 && !strncmp(*sp, "<NULL>", 6))
-	id = 0;
-      else
-        id = pool_strn2id(pool, *sp, s - *sp, 1);
-    }
-  else if (s - *sp == 3 && !strncmp(*sp, "\\00", 3))
-    id = 1;
-  else
-    {
-      char buf[128], *bp, *bp2;
-      const char *sp2;
-      bp = s - *sp >= 128 ? solv_malloc(s - *sp + 1) : buf;
-      for (bp2 = bp, sp2 = *sp; sp2 < s;)
-	{
-	  *bp2++ = *sp2++;
-	  if (bp2[-1] == '\\')
-	    solv_hex2bin(&sp2, (unsigned char *)bp2 - 1, 1);
-	}
-      *bp2 = 0;
-      id = pool_str2id(pool, bp, 1);
-      if (bp != buf)
-	solv_free(bp);
-    }
-  if (isany)
-    {
-      id = pool_rel2id(pool, id, ARCH_ANY, REL_MULTIARCH, 1);
-      s += 4;
-    }
-  *sp = s;
-  return id;
-}
-
-
-static Id
-testcase_str2dep_complex(Pool *pool, const char **sp, int relop)
-{
-  const char *s = *sp;
-  Id flags, id, id2, namespaceid = 0;
-  struct oplist *op;
-
-  while (*s == ' ' || *s == '\t')
-    s++;
-  if (!strncmp(s, "namespace:", 10))
-    {
-      /* special namespace hack */
-      const char *s2;
-      for (s2 = s + 10; *s2 && *s2 != '('; s2++)
-	;
-      if (*s2 == '(')
-	{
-	  namespaceid = pool_strn2id(pool, s, s2 - s, 1);
-	  s = s2;
-	}
-    }
-  if (*s == '(')
-    {
-      s++;
-      id = testcase_str2dep_complex(pool, &s, 0);
-      if (!s || *s != ')')
-	{
-	  *sp = 0;
-	  return 0;
-	}
-      s++;
-    }
-  else
-    id = testcase_str2dep_simple(pool, &s, relop ? 0 : 1);
-  if (namespaceid)
-    id = pool_rel2id(pool, namespaceid, id, REL_NAMESPACE, 1);
-    
-  for (;;)
-    {
-      while (*s == ' ' || *s == '\t')
-	s++;
-      if (!*s || *s == ')' || (relop && strncmp(s, "compat >= ", 10) != 0))
-	{
-	  *sp = s;
-	  return id;
-	}
-
-      /* we have an op! Find the end */
-      flags = -1;
-      if (s[0] == '<' && (s[1] >= '0' && s[1] <= '9'))
-	{
-	  const char *s2;
-	  for (s2 = s + 1; *s2 >= '0' && *s2 <= '9'; s2++)
-	    ;
-	  if (*s2 == '>')
-	    {
-	      flags = strtoul(s + 1, 0, 10);
-	      s = s2 + 1;
-	    }
-	}
-      if (flags == -1)
-	{
-	  for (op = oplist; op->flags; op++)
-	    if (!strncmp(s, op->opname, strlen(op->opname)))
-	      break;
-	  if (!op->flags)
-	    {
-	      *sp = 0;
-	      return 0;
-	    }
-	  flags = op->flags;
-	  s += strlen(op->opname);
-	}
-      id2 = testcase_str2dep_complex(pool, &s, flags > 0 && flags < 8);
-      if (!s)
-	{
-	  *sp = 0;
-	  return 0;
-	}
-      id = pool_rel2id(pool, id, id2, flags, 1);
-    }
-}
-
-Id
-testcase_str2dep(Pool *pool, const char *s)
-{
-  Id id = testcase_str2dep_complex(pool, &s, 0);
-  return s && !*s ? id : 0;
-}
-
 /**********************************************************/
 
 const char *
@@ -672,17 +370,30 @@ testcase_solvid2str(Pool *pool, Id p)
   e = pool_id2str(pool, s->evr);
   a = pool_id2str(pool, s->arch);
   str = pool_alloctmpspace(pool, strlen(n) + strlen(e) + strlen(a) + 3);
-  sprintf(str, "%s-%s.%s", n, e, a);
+  sprintf(str, "%s-%s", n, e);
+  if (solvable_lookup_type(s, SOLVABLE_BUILDFLAVOR))
+    {
+      Queue flavorq;
+      int i;
+
+      queue_init(&flavorq);
+      solvable_lookup_idarray(s, SOLVABLE_BUILDFLAVOR, &flavorq);
+      for (i = 0; i < flavorq.count; i++)
+	str = pool_tmpappend(pool, str, "-", pool_id2str(pool, flavorq.elements[i]));
+      queue_free(&flavorq);
+    }
+  if (s->arch)
+    str = pool_tmpappend(pool, str, ".", a);
   if (!s->repo)
     return pool_tmpappend(pool, str, "@", 0);
   if (s->repo->name)
     {
       int l = strlen(str);
-      char *str2 = pool_tmpappend(pool, str, "@", s->repo->name);
-      for (; str2[l]; l++)
-	if (str2[l] == ' ' || str2[l] == '\t')
-	  str2[l] = '_';
-      return str2;
+      str = pool_tmpappend(pool, str, "@", s->repo->name);
+      for (; str[l]; l++)
+	if (str[l] == ' ' || str[l] == '\t')
+	  str[l] = '_';
+      return str;
     }
   sprintf(buf, "@#%d", s->repo->repoid);
   return pool_tmpappend(pool, str, buf, 0);
@@ -727,6 +438,47 @@ testcase_str2repo(Pool *pool, const char *str)
   return repo;
 }
 
+/* check evr and buildflavors */
+static int
+str2solvid_check(Pool *pool, Solvable *s, const char *start, const char *end, Id evrid)
+{
+  if (!solvable_lookup_type(s, SOLVABLE_BUILDFLAVOR))
+    {
+      /* just check the evr */
+      return evrid && s->evr == evrid;
+    }
+  else
+    {
+      Queue flavorq;
+      int i;
+
+      queue_init(&flavorq);
+      solvable_lookup_idarray(s, SOLVABLE_BUILDFLAVOR, &flavorq);
+      queue_unshift(&flavorq, s->evr);
+      for (i = 0; i < flavorq.count; i++)
+	{
+	  const char *part = pool_id2str(pool, flavorq.elements[i]);
+	  size_t partl = strlen(part);
+	  if (start + partl > end || strncmp(start, part, partl) != 0)
+	    break;
+	  start += partl;
+	  if (i + 1 < flavorq.count)
+	    {
+	      if (start >= end || *start != '-')
+		break;
+	      start++;
+	    }
+	}
+      if (i < flavorq.count)
+	{
+	  queue_free(&flavorq);
+	  return 0;
+	}
+      queue_free(&flavorq);
+      return start == end;
+    }
+}
+
 Id
 testcase_str2solvid(Pool *pool, const char *str)
 {
@@ -766,19 +518,18 @@ testcase_str2solvid(Pool *pool, const char *str)
 	  if (!nid)
 	    continue;
 	  evrid = pool_strn2id(pool, str + i + 1, repostart - (i + 1), 0);
-	  if (!evrid)
-	    continue;
 	  /* first check whatprovides */
 	  FOR_PROVIDES(p, pp, nid)
 	    {
 	      Solvable *s = pool->solvables + p;
-	      if (s->name != nid || s->evr != evrid)
+	      if (s->name != nid)
 		continue;
 	      if (repo && s->repo != repo)
 		continue;
 	      if (arch && s->arch != arch)
 		continue;
-	      return p;
+	      if (str2solvid_check(pool, s, str + i + 1, str + repostart, evrid))
+	        return p;
 	    }
 	  /* maybe it's not installable and thus not in whatprovides. do a slow search */
 	  if (repo)
@@ -786,11 +537,12 @@ testcase_str2solvid(Pool *pool, const char *str)
 	      Solvable *s;
 	      FOR_REPO_SOLVABLES(repo, p, s)
 		{
-		  if (s->name != nid || s->evr != evrid)
+		  if (s->name != nid)
 		    continue;
 		  if (arch && s->arch != arch)
 		    continue;
-		  return p;
+		  if (str2solvid_check(pool, s, str + i + 1, str + repostart, evrid))
+		    return p;
 		}
 	    }
 	  else
@@ -798,11 +550,12 @@ testcase_str2solvid(Pool *pool, const char *str)
 	      FOR_POOL_SOLVABLES(p)
 		{
 		  Solvable *s = pool->solvables + p;
-		  if (s->name != nid || s->evr != evrid)
+		  if (s->name != nid)
 		    continue;
 		  if (arch && s->arch != arch)
 		    continue;
-		  return p;
+		  if (str2solvid_check(pool, s, str + i + 1, str + repostart, evrid))
+		    return p;
 		}
 	    }
 	}
@@ -913,7 +666,7 @@ str2selflags(Pool *pool, char *s)	/* modifies the string! */
 	    break;
 	  }
       if (!selflags2str[i].str)
-	pool_debug(pool, SOLV_ERROR, "str2job: unknown selection flag '%s'\n", s);
+	pool_error(pool, 0, "str2job: unknown selection flag '%s'", s);
       s = se;
     }
   return selflags;
@@ -935,17 +688,107 @@ str2jobflags(Pool *pool, char *s)	/* modifies the string */
 	    break;
 	  }
       if (!jobflags2str[i].str)
-	pool_debug(pool, SOLV_ERROR, "str2job: unknown job flag '%s'\n", s);
+	pool_error(pool, 0, "str2job: unknown job flag '%s'", s);
       s = se;
     }
   return jobflags;
+}
+
+static Id
+testcase_str2jobsel(Pool *pool, const char *caller, char **pieces, int npieces, Id *whatp)
+{
+  Id job, what;
+  if (!strcmp(pieces[0], "pkg") && npieces == 2)
+    {
+      job = SOLVER_SOLVABLE;
+      what = testcase_str2solvid(pool, pieces[1]);
+      if (!what)
+	return pool_error(pool, -1, "%s: unknown package '%s'", caller, pieces[1]);
+    }
+  else if (!strcmp(pieces[0], "name") || !strcmp(pieces[0], "provides"))
+    {
+      /* join em again for dep2str... */
+      char *sp;
+      for (sp = pieces[1]; sp < pieces[npieces - 1]; sp++)
+	if (*sp == 0)
+	  *sp = ' ';
+      what = 0;
+      if (pieces[0][0] == 'p' && strncmp(pieces[1], "namespace:", 10) == 0)
+	{
+	  char *spe = strchr(pieces[1], '(');
+	  int l = strlen(pieces[1]);
+	  if (spe && pieces[1][l - 1] == ')')
+	    {
+	      /* special namespace provides */
+	      if (strcmp(spe, "(<NULL>)") != 0)
+		{
+		  pieces[1][l - 1] = 0;
+		  what = testcase_str2dep(pool, spe + 1);
+		  pieces[1][l - 1] = ')';
+		}
+	      what = pool_rel2id(pool, pool_strn2id(pool, pieces[1], spe - pieces[1], 1), what, REL_NAMESPACE, 1);
+	    }
+	}
+      if (!what)
+        what = testcase_str2dep(pool, pieces[1]);
+      if (pieces[0][0] == 'n')
+	job = SOLVER_SOLVABLE_NAME;
+      else
+	job = SOLVER_SOLVABLE_PROVIDES;
+    }
+  else if (!strcmp(pieces[0], "oneof"))
+    {
+      Queue q;
+      job = SOLVER_SOLVABLE_ONE_OF;
+      queue_init(&q);
+      if (npieces > 1 && strcmp(pieces[1], "nothing") != 0)
+	{
+	  int i;
+	  for (i = 1; i < npieces; i++)
+	    {
+	      Id p = testcase_str2solvid(pool, pieces[i]);
+	      if (!p)
+		{
+		  queue_free(&q);
+		  return pool_error(pool, -1, "%s: unknown package '%s'", caller, pieces[i]);
+		}
+	      queue_push(&q, p);
+	    }
+	}
+      what = pool_queuetowhatprovides(pool, &q);
+      queue_free(&q);
+    }
+  else if (!strcmp(pieces[0], "repo") && npieces == 2)
+    {
+      Repo *repo = testcase_str2repo(pool, pieces[1]);
+      if (!repo)
+	return pool_error(pool, -1, "%s: unknown repo '%s'", caller, pieces[1]);
+      job = SOLVER_SOLVABLE_REPO;
+      what = repo->repoid;
+    }
+  else if (!strcmp(pieces[0], "all") && npieces == 2 && !strcmp(pieces[1], "packages"))
+    {
+      job = SOLVER_SOLVABLE_ALL;
+      what = 0;
+    }
+  else
+    {
+      /* join em again for the error message... */
+      char *sp;
+      for (sp = pieces[0]; sp < pieces[npieces - 1]; sp++)
+	if (*sp == 0)
+	  *sp = ' ';
+      return pool_error(pool, -1, "%s: bad line '%s'", caller, pieces[0]);
+    }
+  *whatp = what;
+  return job;
 }
 
 Id
 testcase_str2job(Pool *pool, const char *str, Id *whatp)
 {
   int i;
-  Id job;
+  Id job, jobsel;
   Id what;
   char *s;
   char **pieces = 0;
@@ -970,7 +813,7 @@ testcase_str2job(Pool *pool, const char *str, Id *whatp)
     }
   if (npieces < 3)
     {
-      pool_debug(pool, SOLV_ERROR, "str2job: bad line '%s'\n", str);
+      pool_error(pool, -1, "str2job: bad line '%s'", str);
       solv_free(pieces);
       return -1;
     }
@@ -980,7 +823,7 @@ testcase_str2job(Pool *pool, const char *str, Id *whatp)
       break;
   if (!job2str[i].str)
     {
-      pool_debug(pool, SOLV_ERROR, "str2job: unknown job '%s'\n", str);
+      pool_error(pool, -1, "str2job: unknown job '%s'", str);
       solv_free(pieces);
       return -1;
     }
@@ -997,134 +840,32 @@ testcase_str2job(Pool *pool, const char *str, Id *whatp)
 	  job |= str2jobflags(pool, flags);
 	}
     }
-  if (!strcmp(pieces[1], "pkg"))
-    {
-      if (npieces != 3)
-	{
-	  pool_debug(pool, SOLV_ERROR, "str2job: bad pkg selector in '%s'\n", str);
-	  solv_free(pieces);
-	  return -1;
-	}
-      job |= SOLVER_SOLVABLE;
-      what = testcase_str2solvid(pool, pieces[2]);
-      if (!what)
-	{
-	  pool_debug(pool, SOLV_ERROR, "str2job: unknown package '%s'\n", pieces[2]);
-	  solv_free(pieces);
-	  return -1;
-	}
-    }
-  else if (!strcmp(pieces[1], "name") || !strcmp(pieces[1], "provides"))
-    {
-      /* join em again for dep2str... */
-      char *sp;
-      for (sp = pieces[2]; sp < pieces[npieces - 1]; sp++)
-	if (*sp == 0)
-	  *sp = ' ';
-      what = 0;
-      if (pieces[1][0] == 'p' && strncmp(pieces[2], "namespace:", 10) == 0)
-	{
-	  char *spe = strchr(pieces[2], '(');
-	  int l = strlen(pieces[2]);
-	  if (spe && pieces[2][l - 1] == ')')
-	    {
-	      /* special namespace provides */
-	      if (strcmp(spe, "(<NULL>)") != 0)
-		{
-		  pieces[2][l - 1] = 0;
-		  what = testcase_str2dep(pool, spe + 1);
-		  pieces[2][l - 1] = ')';
-		}
-	      what = pool_rel2id(pool, pool_strn2id(pool, pieces[2], spe - pieces[2], 1), what, REL_NAMESPACE, 1);
-	    }
-	}
-      if (!what)
-        what = testcase_str2dep(pool, pieces[2]);
-      if (pieces[1][0] == 'n')
-	job |= SOLVER_SOLVABLE_NAME;
-      else
-	job |= SOLVER_SOLVABLE_PROVIDES;
-    }
-  else if (!strcmp(pieces[1], "oneof"))
-    {
-      Queue q;
-      job |= SOLVER_SOLVABLE_ONE_OF;
-      queue_init(&q);
-      if (npieces > 3 && strcmp(pieces[2], "nothing") != 0)
-	{
-	  for (i = 2; i < npieces; i++)
-	    {
-	      Id p = testcase_str2solvid(pool, pieces[i]);
-	      if (!p)
-		{
-		  pool_debug(pool, SOLV_ERROR, "str2job: unknown package '%s'\n", pieces[i]);
-		  queue_free(&q);
-		  solv_free(pieces);
-		  return -1;
-		}
-	      queue_push(&q, p);
-	    }
-	}
-      what = pool_queuetowhatprovides(pool, &q);
-      queue_free(&q);
-    }
-  else if (!strcmp(pieces[1], "repo"))
-    {
-      Repo *repo;
-      if (npieces != 3)
-	{
-	  pool_debug(pool, SOLV_ERROR, "str2job: bad line '%s'\n", str);
-	  solv_free(pieces);
-	  return -1;
-	}
-      repo = testcase_str2repo(pool, pieces[2]);
-      if (!repo)
-	{
-	  pool_debug(pool, SOLV_ERROR, "str2job: unknown repo '%s'\n", pieces[2]);
-	  solv_free(pieces);
-	  return -1;
-	}
-      job |= SOLVER_SOLVABLE_REPO;
-      what = repo->repoid;
-    }
-  else if (!strcmp(pieces[1], "all"))
-    {
-      if (npieces != 3 && strcmp(pieces[2], "packages") != 0)
-	{
-	  pool_debug(pool, SOLV_ERROR, "str2job: bad line '%s'\n", str);
-	  solv_free(pieces);
-	  return -1;
-	}
-      job |= SOLVER_SOLVABLE_ALL;
-      what = 0;
-    }
-  else
-    {
-      pool_debug(pool, SOLV_ERROR, "str2job: unknown selection in '%s'\n", str);
-      solv_free(pieces);
-      return -1;
-    }
-  *whatp = what;
+  jobsel = testcase_str2jobsel(pool, "str2job", pieces + 1, npieces - 1, &what);
   solv_free(pieces);
-  return job;
+  if (jobsel == -1)
+    return -1;
+  *whatp = what;
+  return job | jobsel;
 }
 
-int
-addselectionjob(Pool *pool, char **pieces, int npieces, Queue *jobqueue)
+#define SELECTIONJOB_MATCHDEPS		1
+#define SELECTIONJOB_MATCHDEPID		2
+#define SELECTIONJOB_MATCHSOLVABLE	3
+
+static int
+addselectionjob(Pool *pool, char **pieces, int npieces, Queue *jobqueue, int type, int keyname)
 {
   Id job;
-  int i, r;
+  int i, r = 0;
   int selflags;
   Queue sel;
+  char *sp;
 
   for (i = 0; job2str[i].str; i++)
     if (!strcmp(pieces[0], job2str[i].str))
       break;
   if (!job2str[i].str)
-    {
-      pool_debug(pool, SOLV_ERROR, "selstr2job: unknown job '%s'\n", pieces[0]);
-      return -1;
-    }
+    return pool_error(pool, -1, "selstr2job: unknown job '%s'", pieces[0]);
   job = job2str[i].job;
   if (npieces > 3)
     {
@@ -1138,349 +879,31 @@ addselectionjob(Pool *pool, char **pieces, int npieces, Queue *jobqueue)
 	}
     }
   if (npieces < 4)
-    {
-      pool_debug(pool, SOLV_ERROR, "selstr2job: no selection flags\n");
-      return -1;
-    }
-  selflags = str2selflags(pool, pieces[3]);
+    return pool_error(pool, -1, "selstr2job: no selection flags");
+  selflags = str2selflags(pool, pieces[npieces - 1]);
+  /* re-join pieces */
+  for (sp = pieces[2]; sp < pieces[npieces - 2]; sp++)
+    if (*sp == 0)
+      *sp = ' ';
   queue_init(&sel);
-  r = selection_make(pool, &sel, pieces[2], selflags);
+  if (selflags & (SELECTION_ADD | SELECTION_SUBTRACT | SELECTION_FILTER))
+    {
+      for (i = 0; i < jobqueue->count; i += 2)
+	queue_push2(&sel, jobqueue->elements[i] & (SOLVER_SELECTMASK | SOLVER_SETMASK), jobqueue->elements[i + 1]);
+      queue_empty(jobqueue);
+    }
+  if (!type)
+    r = selection_make(pool, &sel, pieces[2], selflags);
+  else if (type == SELECTIONJOB_MATCHDEPS)
+    r = selection_make_matchdeps(pool, &sel, pieces[2], selflags, keyname, 0);
+  else if (type == SELECTIONJOB_MATCHDEPID)
+    r = selection_make_matchdepid(pool, &sel, testcase_str2dep(pool, pieces[2]), selflags, keyname, 0);
+  else if (type == SELECTIONJOB_MATCHSOLVABLE)
+    r = selection_make_matchsolvable(pool, &sel, testcase_str2solvid(pool, pieces[2]), selflags, keyname, 0);
   for (i = 0; i < sel.count; i += 2)
     queue_push2(jobqueue, job | sel.elements[i], sel.elements[i + 1]);
   queue_free(&sel);
   return r;
-}
-
-static void
-writedeps(Repo *repo, FILE *fp, const char *tag, Id key, Solvable *s, Offset off)
-{
-  Pool *pool = repo->pool;
-  Id id, *dp;
-  int tagwritten = 0;
-  const char *idstr;
-
-  if (!off)
-    return;
-  dp = repo->idarraydata + off;
-  while ((id = *dp++) != 0)
-    {
-      if (key == SOLVABLE_REQUIRES && id == SOLVABLE_PREREQMARKER)
-	{
-	  if (tagwritten)
-	    fprintf(fp, "-%s\n", tag);
-	  tagwritten = 0;
-	  tag = "Prq:";
-	  continue;
-	}
-      if (key == SOLVABLE_PROVIDES && id == SOLVABLE_FILEMARKER)
-	continue;
-      idstr = testcase_dep2str(pool, id);
-      if (!tagwritten)
-	{
-	  fprintf(fp, "+%s\n", tag);
-	  tagwritten = 1;
-	}
-      fprintf(fp, "%s\n", idstr);
-    }
-  if (tagwritten)
-    fprintf(fp, "-%s\n", tag);
-}
-
-static void
-writefilelist(Repo *repo, FILE *fp, const char *tag, Solvable *s)
-{
-  Pool *pool = repo->pool;
-  int tagwritten = 0;
-  Dataiterator di;
-
-  dataiterator_init(&di, pool, repo, s - pool->solvables, SOLVABLE_FILELIST, 0, 0);
-  while (dataiterator_step(&di))
-    {
-      const char *s = repodata_dir2str(di.data, di.kv.id, di.kv.str);
-      if (!tagwritten)
-	{
-	  fprintf(fp, "+%s\n", tag);
-	  tagwritten = 1;
-	}
-      fprintf(fp, "%s\n", s);
-    }
-  if (tagwritten)
-    fprintf(fp, "-%s\n", tag);
-  dataiterator_free(&di);
-}
-
-int
-testcase_write_testtags(Repo *repo, FILE *fp)
-{
-  Pool *pool = repo->pool;
-  Solvable *s;
-  Id p;
-  const char *name;
-  const char *evr;
-  const char *arch;
-  const char *release;
-  const char *tmp;
-  unsigned int ti;
-  Queue q;
-
-  fprintf(fp, "=Ver: 3.0\n");
-  queue_init(&q);
-  FOR_REPO_SOLVABLES(repo, p, s)
-    {
-      name = pool_id2str(pool, s->name);
-      evr = pool_id2str(pool, s->evr);
-      arch = pool_id2str(pool, s->arch);
-      release = strrchr(evr, '-');
-      if (!release)
-	release = evr + strlen(evr);
-      fprintf(fp, "=Pkg: %s %.*s %s %s\n", name, (int)(release - evr), evr, *release && release[1] ? release + 1 : "-", arch);
-      tmp = solvable_lookup_str(s, SOLVABLE_SUMMARY);
-      if (tmp)
-        fprintf(fp, "=Sum: %s\n", tmp);
-      writedeps(repo, fp, "Req:", SOLVABLE_REQUIRES, s, s->requires);
-      writedeps(repo, fp, "Prv:", SOLVABLE_PROVIDES, s, s->provides);
-      writedeps(repo, fp, "Obs:", SOLVABLE_OBSOLETES, s, s->obsoletes);
-      writedeps(repo, fp, "Con:", SOLVABLE_CONFLICTS, s, s->conflicts);
-      writedeps(repo, fp, "Rec:", SOLVABLE_RECOMMENDS, s, s->recommends);
-      writedeps(repo, fp, "Sup:", SOLVABLE_SUPPLEMENTS, s, s->supplements);
-      writedeps(repo, fp, "Sug:", SOLVABLE_SUGGESTS, s, s->suggests);
-      writedeps(repo, fp, "Enh:", SOLVABLE_ENHANCES, s, s->enhances);
-      if (solvable_lookup_idarray(s, SOLVABLE_PREREQ_IGNOREINST, &q))
-	{
-	  int i;
-	  fprintf(fp, "+Ipr:\n");
-	  for (i = 0; i < q.count; i++)
-	    fprintf(fp, "%s\n", testcase_dep2str(pool, q.elements[i]));
-	  fprintf(fp, "-Ipr:\n");
-	}
-      if (s->vendor)
-	fprintf(fp, "=Vnd: %s\n", pool_id2str(pool, s->vendor));
-      ti = solvable_lookup_num(s, SOLVABLE_BUILDTIME, 0);
-      if (ti)
-	fprintf(fp, "=Tim: %u\n", ti);
-      writefilelist(repo, fp, "Fls:", s);
-    }
-  queue_free(&q);
-  return 0;
-}
-
-static inline Offset
-adddep(Repo *repo, Offset olddeps, char *str, Id marker)
-{
-  Id id = *str == '/' ? pool_str2id(repo->pool, str, 1) : testcase_str2dep(repo->pool, str);
-  return repo_addid_dep(repo, olddeps, id, marker);
-}
-
-static void
-finish_v2_solvable(Pool *pool, Repodata *data, Solvable *s, char *filelist, int nfilelist)
-{
-  if (nfilelist)
-    {
-      int l;
-      Id did;
-      for (l = 0; l < nfilelist; l += strlen(filelist + l) + 1)
-	{
-	  char *p = strrchr(filelist + l, '/');
-	  if (!p)
-	    continue;
-	  *p++ = 0;
-	  did = repodata_str2dir(data, filelist + l, 1);
-	  p[-1] = '/';
-	  if (!did)
-	    did = repodata_str2dir(data, "/", 1);
-	  repodata_add_dirstr(data, s - pool->solvables, SOLVABLE_FILELIST, did, p);
-	}
-    }
-  repo_rewrite_suse_deps(s, 0);
-}
-
-/* stripped down version of susetags parser used for testcases */
-int
-testcase_add_testtags(Repo *repo, FILE *fp, int flags)
-{
-  Pool *pool = repo->pool;
-  char *line, *linep;
-  int aline;
-  int tag;
-  Repodata *data;
-  Solvable *s;
-  char *sp[5];
-  unsigned int t;
-  int intag;
-  char *filelist = 0;
-  int afilelist = 0;
-  int nfilelist = 0;
-  int tagsversion = 0;
-  int addselfprovides = 1;	/* for compat reasons */
-
-  data = repo_add_repodata(repo, flags);
-  s = 0;
-  intag = 0;
-
-  aline = 1024;
-  line = solv_malloc(aline);
-  linep = line;
-  for (;;)
-    {
-      if (linep - line + 16 > aline)
-	{
-	  aline = linep - line;
-	  line = solv_realloc(line, aline + 512);
-	  linep = line + aline;
-	  aline += 512;
-	}
-      if (!fgets(linep, aline - (linep - line), fp))
-	break;
-      linep += strlen(linep);
-      if (linep == line || linep[-1] != '\n')
-	continue;
-      linep[-1] = 0;
-      linep = line + intag;
-      if (intag)
-	{
-	  if (line[intag] == '-' && !strncmp(line + 1, line + intag + 1, intag - 2))
-	    {
-	      intag = 0;
-	      linep = line;
-	      continue;
-	    }
-	}
-      else if (line[0] == '+' && line[1] && line[1] != ':')
-	{
-	  char *tagend = strchr(line, ':');
-	  if (!tagend)
-	    continue;
-	  line[0] = '=';
-	  tagend[1] = ' ';
-	  intag = tagend + 2 - line;
-	  linep = line + intag;
-	  continue;
-	}
-      if (*line != '=' || !line[1] || !line[2] || !line[3] || line[4] != ':')
-	continue;
-      tag = line[1] << 16 | line[2] << 8 | line[3];
-      switch(tag)
-        {
-	case 'V' << 16 | 'e' << 8 | 'r':
-	  tagsversion = atoi(line + 6);
-	  addselfprovides = tagsversion < 3 || strstr(line + 6, "addselfprovides") != 0;
-	  break;
-	case 'P' << 16 | 'k' << 8 | 'g':
-	  if (s)
-	    {
-	      if (tagsversion == 2)
-		finish_v2_solvable(pool, data, s, filelist, nfilelist);
-	      if (addselfprovides && s->name && s->arch != ARCH_SRC && s->arch != ARCH_NOSRC)
-		s->provides = repo_addid_dep(s->repo, s->provides, pool_rel2id(pool, s->name, s->evr, REL_EQ, 1), 0);
-	    }
-	  nfilelist = 0;
-	  if (split(line + 5, sp, 5) != 4)
-	    break;
-	  s = pool_id2solvable(pool, repo_add_solvable(repo));
-	  s->name = pool_str2id(pool, sp[0], 1);
-	  /* join back version and release */
-	  if (sp[2] && !(sp[2][0] == '-' && !sp[2][1]))
-	    sp[2][-1] = '-';
-	  s->evr = makeevr(pool, sp[1]);
-	  s->arch = pool_str2id(pool, sp[3], 1);
-	  break;
-	case 'S' << 16 | 'u' << 8 | 'm':
-	  repodata_set_str(data, s - pool->solvables, SOLVABLE_SUMMARY, line + 6);
-	  break;
-	case 'V' << 16 | 'n' << 8 | 'd':
-	  s->vendor = pool_str2id(pool, line + 6, 1);
-	  break;
-	case 'T' << 16 | 'i' << 8 | 'm':
-	  t = atoi(line + 6);
-	  if (t)
-	    repodata_set_num(data, s - pool->solvables, SOLVABLE_BUILDTIME, t);
-	  break;
-	case 'R' << 16 | 'e' << 8 | 'q':
-	  s->requires = adddep(repo, s->requires, line + 6, -SOLVABLE_PREREQMARKER);
-	  break;
-	case 'P' << 16 | 'r' << 8 | 'q':
-	  s->requires = adddep(repo, s->requires, line + 6, SOLVABLE_PREREQMARKER);
-	  break;
-	case 'P' << 16 | 'r' << 8 | 'v':
-	  /* version 2 had the file list at the end of the provides */
-	  if (tagsversion == 2)
-	    {
-	      if (line[6] == '/')
-		{
-		  int l = strlen(line + 6) + 1;
-		  if (nfilelist + l > afilelist)
-		    {
-		      afilelist = nfilelist + l + 512;
-		      filelist = solv_realloc(filelist, afilelist);
-		    }
-		  memcpy(filelist + nfilelist, line + 6, l);
-		  nfilelist += l;
-		  break;
-		}
-	      if (nfilelist)
-		{
-		  int l;
-		  for (l = 0; l < nfilelist; l += strlen(filelist + l) + 1)
-		    s->provides = repo_addid_dep(repo, s->provides, pool_str2id(pool, filelist + l, 1), 0);
-		  nfilelist = 0;
-		}
-	    }
-	  s->provides = adddep(repo, s->provides, line + 6, 0);
-	  break;
-	case 'F' << 16 | 'l' << 8 | 's':
-	  {
-	    char *p = strrchr(line + 6, '/');
-	    Id did;
-	    if (!p)
-	      break;
-	    *p++ = 0;
-	    did = repodata_str2dir(data, line + 6, 1);
-	    if (!did)
-	      did = repodata_str2dir(data, "/", 1);
-	    repodata_add_dirstr(data, s - pool->solvables, SOLVABLE_FILELIST, did, p);
-	    break;
-	  }
-	case 'O' << 16 | 'b' << 8 | 's':
-	  s->obsoletes = adddep(repo, s->obsoletes, line + 6, 0);
-	  break;
-	case 'C' << 16 | 'o' << 8 | 'n':
-	  s->conflicts = adddep(repo, s->conflicts, line + 6, 0);
-	  break;
-	case 'R' << 16 | 'e' << 8 | 'c':
-	  s->recommends = adddep(repo, s->recommends, line + 6, 0);
-	  break;
-	case 'S' << 16 | 'u' << 8 | 'p':
-	  s->supplements = adddep(repo, s->supplements, line + 6, 0);
-	  break;
-	case 'S' << 16 | 'u' << 8 | 'g':
-	  s->suggests = adddep(repo, s->suggests, line + 6, 0);
-	  break;
-	case 'E' << 16 | 'n' << 8 | 'h':
-	  s->enhances = adddep(repo, s->enhances, line + 6, 0);
-	  break;
-	case 'I' << 16 | 'p' << 8 | 'r':
-	  {
-	    Id id = line[6] == '/' ? pool_str2id(pool, line + 6, 1) : testcase_str2dep(pool, line + 6);
-	    repodata_add_idarray(data, s - pool->solvables, SOLVABLE_PREREQ_IGNOREINST, id);
-	    break;
-	  }
-        default:
-	  break;
-        }
-    }
-  if (s)
-    {
-      if (tagsversion == 2)
-	finish_v2_solvable(pool, data, s, filelist, nfilelist);
-      if (addselfprovides && s->name && s->arch != ARCH_SRC && s->arch != ARCH_NOSRC)
-        s->provides = repo_addid_dep(s->repo, s->provides, pool_rel2id(pool, s->name, s->evr, REL_EQ, 1), 0);
-    }
-  solv_free(line);
-  solv_free(filelist);
-  repodata_free_dircache(data);
-  if (!(flags & REPO_NO_INTERNALIZE))
-    repodata_internalize(data);
-  return 0;
 }
 
 const char *
@@ -1522,10 +945,7 @@ testcase_setpoolflags(Pool *pool, const char *str)
 	if (!strncmp(poolflags2str[i].str, s, p - s) && poolflags2str[i].str[p - s] == 0)
 	  break;
       if (!poolflags2str[i].str)
-	{
-	  pool_debug(pool, SOLV_ERROR, "setpoolflags: unknown flag '%.*s'\n", (int)(p - s), s);
-	  return 0;
-	}
+        return pool_error(pool, 0, "setpoolflags: unknown flag '%.*s'", (int)(p - s), s);
       pool_set_flag(pool, poolflags2str[i].flag, v);
     }
   return 1;
@@ -1579,15 +999,9 @@ testcase_setsolverflags(Solver *solv, const char *str)
 	if (!strncmp(solverflags2str[i].str, s, p - s) && solverflags2str[i].str[p - s] == 0)
 	  break;
       if (!solverflags2str[i].str)
-	{
-	  pool_debug(solv->pool, SOLV_ERROR, "setsolverflags: unknown flag '%.*s'\n", (int)(p - s), s);
-	  return 0;
-	}
+	return pool_error(solv->pool, 0, "setsolverflags: unknown flag '%.*s'", (int)(p - s), s);
       if (solver_set_flag(solv, solverflags2str[i].flag, v) == -1)
-	{
-	  pool_debug(solv->pool, SOLV_ERROR, "setsolverflags: unsupported flag '%s'\n", solverflags2str[i].str);
-	  return 0;
-	}
+        return pool_error(solv->pool, 0, "setsolverflags: unsupported flag '%s'", solverflags2str[i].str);
     }
   return 1;
 }
@@ -1777,6 +1191,8 @@ static struct rclass2str {
   { SOLVER_RULE_LEARNT, "learnt" },
   { SOLVER_RULE_BEST, "best" },
   { SOLVER_RULE_YUMOBS, "yumobs" },
+  { SOLVER_RULE_BLACK, "black" },
+  { SOLVER_RULE_RECOMMENDS, "recommends" },
   { 0, 0 }
 };
 
@@ -1957,6 +1373,24 @@ testcase_solverresult(Solver *solv, int resultflags)
       queue_free(&q);
       queue_free(&qf);
     }
+  if ((resultflags & TESTCASE_RESULT_USERINSTALLED) != 0)
+    {
+      Queue q;
+      solver_get_userinstalled(solv, &q, 0);
+      for (i = 0; i < q.count; i++)
+	{
+	  s = pool_tmpjoin(pool, "userinstalled pkg ", testcase_solvid2str(pool, q.elements[i]), 0);
+	  strqueue_push(&sq, s);
+	}
+      queue_empty(&q);
+      solver_get_userinstalled(solv, &q, GET_USERINSTALLED_NAMES | GET_USERINSTALLED_INVERTED);
+      for (i = 0; i < q.count; i++)
+	{
+	  s = pool_tmpjoin(pool, "autoinst name ", pool_id2str(pool, q.elements[i]), 0);
+	  strqueue_push(&sq, s);
+	}
+      queue_free(&q);
+    }
   if ((resultflags & TESTCASE_RESULT_ALTERNATIVES) != 0)
     {
       char *altprefix;
@@ -1984,6 +1418,8 @@ testcase_solverresult(Solver *solv, int resultflags)
 	      /* map choice rules back to pkg rules */
 	      if (solver_ruleclass(solv, id) == SOLVER_RULE_CHOICE)
 		id = solver_rule2pkgrule(solv, id);
+	      if (solver_ruleclass(solv, id) == SOLVER_RULE_RECOMMENDS)
+		id = solver_rule2pkgrule(solv, id);
 	      solver_allruleinfos(solv, id, &rq);
 	      for (i = 0; i < rq.count; i += 4)
 		{
@@ -1991,7 +1427,7 @@ testcase_solverresult(Solver *solv, int resultflags)
 		  if ((rtype & SOLVER_RULE_TYPEMASK) == SOLVER_RULE_JOB)
 		    {
 		      const char *js = testcase_job2str(pool, rq.elements[i + 2], rq.elements[i + 3]);
-		      char *s = pool_tmpjoin(pool, altprefix, num, " job ");
+		      char *s = pool_tmpjoin(pool, altprefix, num, "job ");
 		      s = pool_tmpappend(pool, s, js, 0);
 		      strqueue_push(&sq, s);
 		    }
@@ -1999,6 +1435,13 @@ testcase_solverresult(Solver *solv, int resultflags)
 		    {
 		      char *s = pool_tmpjoin(pool, altprefix, num, testcase_solvid2str(pool, rq.elements[i + 1]));
 		      s = pool_tmpappend(pool, s, " requires ", testcase_dep2str(pool, rq.elements[i + 3]));
+		      strqueue_push(&sq, s);
+		    }
+		  else if (rtype == SOLVER_RULE_UPDATE || rtype == SOLVER_RULE_FEATURE)
+		    {
+		      const char *js = testcase_solvid2str(pool, rq.elements[i + 1]);
+		      char *s = pool_tmpjoin(pool, altprefix, num, "update ");
+		      s = pool_tmpappend(pool, s, js, 0);
 		      strqueue_push(&sq, s);
 		    }
 		}
@@ -2109,6 +1552,28 @@ testcase_solverresult(Solver *solv, int resultflags)
 	}
       queue_free(&whyq);
     }
+  if ((resultflags & TESTCASE_RESULT_CLEANDEPS) != 0)
+    {
+      Queue q;
+
+      queue_init(&q);
+      solver_get_cleandeps(solv, &q);
+      for (i = 0; i < q.count; i++)
+	{
+	  s = pool_tmpjoin(pool, "cleandeps ", testcase_solvid2str(pool, q.elements[i]), 0);
+	  strqueue_push(&sq, s);
+	}
+      queue_free(&q);
+    }
+  if ((resultflags & TESTCASE_RESULT_JOBS) != 0)
+    {
+      for (i = 0; i < solv->job.count; i += 2)
+	{
+	  s = (char *)testcase_job2str(pool, solv->job.elements[i], solv->job.elements[i + 1]);
+	  s = pool_tmpjoin(pool, "job ", s, 0);
+	  strqueue_push(&sq, s);
+	}
+    }
   strqueue_sort(&sq);
   result = strqueue_join(&sq);
   strqueue_free(&sq);
@@ -2126,7 +1591,7 @@ testcase_write_mangled(Solver *solv, const char *dir, int resultflags, const cha
   Id lowscore;
   FILE *fp;
   Strqueue sq;
-  char *cmd, *out;
+  char *cmd, *out, *result;
   const char *s;
 
   if (!testcasename)
@@ -2134,11 +1599,12 @@ testcase_write_mangled(Solver *solv, const char *dir, int resultflags, const cha
   if (!resultname)
     resultname = "solver.result";
 
+#ifdef _WIN32
+  if (mkdir(dir) && errno != EEXIST)
+#else
   if (mkdir(dir, 0777) && errno != EEXIST)
-    {
-      pool_debug(solv->pool, SOLV_ERROR, "testcase_write: could not create directory '%s'\n", dir);
-      return 0;
-    }
+#endif
+    return pool_error(solv->pool, 0, "testcase_write: could not create directory '%s'", dir);
   strqueue_init(&sq);
   FOR_REPOS(repoid, repo)
     {
@@ -2148,7 +1614,11 @@ testcase_write_mangled(Solver *solv, const char *dir, int resultflags, const cha
 	sprintf(priobuf, "%d.%d", repo->priority, repo->subpriority);
       else
 	sprintf(priobuf, "%d", repo->priority);
+#if !defined(WITHOUT_COOKIEOPEN) && defined(ENABLE_ZLIB_COMPRESSION)
       out = pool_tmpjoin(pool, name, ".repo", ".gz");
+#else
+      out = pool_tmpjoin(pool, name, ".repo", 0);
+#endif
       for (i = 0; out[i]; i++)
 	if (out[i] == '/')
 	  out[i] = '_';
@@ -2159,14 +1629,14 @@ testcase_write_mangled(Solver *solv, const char *dir, int resultflags, const cha
       out = pool_tmpjoin(pool, dir, "/", out);
       if (!(fp = solv_xfopen(out, "w")))
 	{
-	  pool_debug(solv->pool, SOLV_ERROR, "testcase_write: could not open '%s' for writing\n", out);
+	  pool_error(solv->pool, 0, "testcase_write: could not open '%s' for writing", out);
 	  strqueue_free(&sq);
 	  return 0;
 	}
       testcase_write_testtags(repo, fp);
       if (fclose(fp))
 	{
-	  pool_debug(solv->pool, SOLV_ERROR, "testcase_write: write error\n");
+	  pool_error(solv->pool, 0, "testcase_write: write error");
 	  strqueue_free(&sq);
 	  return 0;
 	}
@@ -2184,7 +1654,7 @@ testcase_write_mangled(Solver *solv, const char *dir, int resultflags, const cha
 	  lowscore = pool->id2arch[i];
 	}
     }
-  cmd = pool_tmpjoin(pool, "system ", pool->lastarch ? pool_id2str(pool, arch) : "unset", 0);
+  cmd = pool_tmpjoin(pool, "system ", pool->lastarch ? pool_id2str(pool, arch) : "-", 0);
   for (i = 0; disttype2str[i].str != 0; i++)
     if (pool->disttype == disttype2str[i].type)
       break;
@@ -2262,9 +1732,8 @@ testcase_write_mangled(Solver *solv, const char *dir, int resultflags, const cha
       strqueue_push(&sq, cmd);
     }
 
-  if (resultflags)
+  if ((resultflags & ~TESTCASE_RESULT_REUSE_SOLVER) != 0)
     {
-      char *result;
       cmd = 0;
       for (i = 0; resultflags2str[i].str; i++)
 	if ((resultflags & resultflags2str[i].flag) != 0)
@@ -2275,7 +1744,6 @@ testcase_write_mangled(Solver *solv, const char *dir, int resultflags, const cha
       result = testcase_solverresult(solv, resultflags);
       if (!strcmp(resultname, "<inline>"))
 	{
-	  int i;
 	  Strqueue rsq;
 	  strqueue_init(&rsq);
 	  strqueue_split(&rsq, result);
@@ -2291,14 +1759,14 @@ testcase_write_mangled(Solver *solv, const char *dir, int resultflags, const cha
 	  out = pool_tmpjoin(pool, dir, "/", resultname);
 	  if (!(fp = fopen(out, "w")))
 	    {
-	      pool_debug(solv->pool, SOLV_ERROR, "testcase_write: could not open '%s' for writing\n", out);
+	      pool_error(solv->pool, 0, "testcase_write: could not open '%s' for writing", out);
 	      solv_free(result);
 	      strqueue_free(&sq);
 	      return 0;
 	    }
 	  if (result && *result && fwrite(result, strlen(result), 1, fp) != 1)
 	    {
-	      pool_debug(solv->pool, SOLV_ERROR, "testcase_write: write error\n");
+	      pool_error(solv->pool, 0, "testcase_write: write error");
 	      solv_free(result);
 	      strqueue_free(&sq);
 	      fclose(fp);
@@ -2306,7 +1774,8 @@ testcase_write_mangled(Solver *solv, const char *dir, int resultflags, const cha
 	    }
 	  if (fclose(fp))
 	    {
-	      pool_debug(solv->pool, SOLV_ERROR, "testcase_write: write error\n");
+	      pool_error(solv->pool, 0, "testcase_write: write error");
+	      solv_free(result);
 	      strqueue_free(&sq);
 	      return 0;
 	    }
@@ -2314,29 +1783,29 @@ testcase_write_mangled(Solver *solv, const char *dir, int resultflags, const cha
       solv_free(result);
     }
 
-  cmd = strqueue_join(&sq);
+  result = strqueue_join(&sq);
+  strqueue_free(&sq);
   out = pool_tmpjoin(pool, dir, "/", testcasename);
   if (!(fp = fopen(out, "w")))
     {
-      pool_debug(solv->pool, SOLV_ERROR, "testcase_write: could not open '%s' for writing\n", out);
-      strqueue_free(&sq);
+      pool_error(solv->pool, 0, "testcase_write: could not open '%s' for writing", out);
+      solv_free(result);
       return 0;
     }
-  if (*cmd && fwrite(cmd, strlen(cmd), 1, fp) != 1)
+  if (*result && fwrite(result, strlen(result), 1, fp) != 1)
     {
-      pool_debug(solv->pool, SOLV_ERROR, "testcase_write: write error\n");
-      strqueue_free(&sq);
+      pool_error(solv->pool, 0, "testcase_write: write error");
+      solv_free(result);
       fclose(fp);
       return 0;
     }
   if (fclose(fp))
     {
-      pool_debug(solv->pool, SOLV_ERROR, "testcase_write: write error\n");
-      strqueue_free(&sq);
+      pool_error(solv->pool, 0, "testcase_write: write error");
+      solv_free(result);
       return 0;
     }
-  solv_free(cmd);
-  strqueue_free(&sq);
+  solv_free(result);
   return 1;
 }
 
@@ -2485,7 +1954,7 @@ str2resultflags(Pool *pool, char *s)	/* modifies the string! */
 	    break;
 	  }
       if (!resultflags2str[i].str)
-	pool_debug(pool, SOLV_ERROR, "result: unknown flag '%s'\n", s);
+	pool_error(pool, 0, "result: unknown flag '%s'", s);
       s = se;
     }
   return resultflags;
@@ -2509,13 +1978,23 @@ testcase_read(Pool *pool, FILE *fp, const char *testcase, Queue *job, char **res
   int ngenid = 0;
   Queue autoinstq;
 
+  if (resultp)
+    *resultp = 0;
+  if (resultflagsp)
+    *resultflagsp = 0;
   if (!fp && !(fp = fopen(testcase, "r")))
     {
-      pool_debug(pool, SOLV_ERROR, "testcase_read: could not open '%s'\n", testcase);
+      pool_error(pool, 0, "testcase_read: could not open '%s'", testcase);
       return 0;
     }
   testcasedir = solv_strdup(testcase);
-  if ((s = strrchr(testcasedir, '/')) != 0)
+  s = strrchr(testcasedir, '/');
+#ifdef _WIN32
+  buf = strrchr(testcasedir, '\\');
+  if (!s || (buf && buf > s))
+    s = buf;
+#endif
+  if (s)
     s[1] = 0;
   else
     *testcasedir = 0;
@@ -2601,7 +2080,7 @@ testcase_read(Pool *pool, FILE *fp, const char *testcase, Queue *job, char **res
 		}
 	      if (!rfp)
 		{
-		  pool_debug(pool, SOLV_ERROR, "testcase_read: could not open '%s'\n", rdata);
+		  pool_error(pool, 0, "testcase_read: could not open '%s'", rdata);
 		}
 	      else if (!strcmp(repotype, "testtags"))
 		{
@@ -2613,10 +2092,9 @@ testcase_read(Pool *pool, FILE *fp, const char *testcase, Queue *job, char **res
 		  repo_add_solv(repo, rfp, 0);
 		  fclose(rfp);
 		}
-#if 0
+#if ENABLE_TESTCASE_HELIXREPO
 	      else if (!strcmp(repotype, "helix"))
 		{
-		  extern int repo_add_helix(Repo *repo, FILE *fp, int flags);
 		  repo_add_helix(repo, rfp, 0);
 		  fclose(rfp);
 		}
@@ -2624,7 +2102,7 @@ testcase_read(Pool *pool, FILE *fp, const char *testcase, Queue *job, char **res
 	      else
 		{
 		  fclose(rfp);
-		  pool_debug(pool, SOLV_ERROR, "testcase_read: unknown repo type for repo '%s'\n", repo->name);
+		  pool_error(pool, 0, "testcase_read: unknown repo type for repo '%s'", repo->name);
 		}
 	    }
 	}
@@ -2660,11 +2138,11 @@ testcase_read(Pool *pool, FILE *fp, const char *testcase, Queue *job, char **res
 		}
 	      if (!(dp && *dp))
 		{
-		  pool_debug(pool, SOLV_ERROR, "testcase_read: system: could not change disttype to '%s'\n", pieces[2]);
+		  pool_error(pool, 0, "testcase_read: system: could not change disttype to '%s'", pieces[2]);
 		  missing_features = 1;
 		}
 	    }
-	  if (strcmp(pieces[1], "unset") == 0)
+	  if (strcmp(pieces[1], "unset") == 0 || strcmp(pieces[1], "-") == 0)
 	    pool_setarch(pool, 0);
 	  else if (pieces[1][0] == ':')
 	    pool_setarchpolicy(pool, pieces[1] + 1);
@@ -2674,7 +2152,7 @@ testcase_read(Pool *pool, FILE *fp, const char *testcase, Queue *job, char **res
 	    {
 	      Repo *repo = testcase_str2repo(pool, pieces[3]);
 	      if (!repo)
-	        pool_debug(pool, SOLV_ERROR, "testcase_read: system: unknown repo '%s'\n", pieces[3]);
+	        pool_error(pool, 0, "testcase_read: system: unknown repo '%s'", pieces[3]);
 	      else
 		pool_set_installed(pool, repo);
 	    }
@@ -2691,7 +2169,25 @@ testcase_read(Pool *pool, FILE *fp, const char *testcase, Queue *job, char **res
 	    }
 	  if (npieces >= 3 && !strcmp(pieces[2], "selection"))
 	    {
-	      addselectionjob(pool, pieces + 1, npieces - 1, job);
+	      addselectionjob(pool, pieces + 1, npieces - 1, job, 0, 0);
+	      continue;
+	    }
+	  if (npieces >= 4 && !strcmp(pieces[2], "selection_matchdeps"))
+	    {
+	      pieces[2] = pieces[1];
+	      addselectionjob(pool, pieces + 2, npieces - 2, job, SELECTIONJOB_MATCHDEPS, pool_str2id(pool, pieces[3], 1));
+	      continue;
+	    }
+	  if (npieces >= 4 && !strcmp(pieces[2], "selection_matchdepid"))
+	    {
+	      pieces[2] = pieces[1];
+	      addselectionjob(pool, pieces + 2, npieces - 2, job, SELECTIONJOB_MATCHDEPID, pool_str2id(pool, pieces[3], 1));
+	      continue;
+	    }
+	  if (npieces >= 4 && !strcmp(pieces[2], "selection_matchsolvable"))
+	    {
+	      pieces[2] = pieces[1];
+	      addselectionjob(pool, pieces + 2, npieces - 2, job, SELECTIONJOB_MATCHSOLVABLE, pool_str2id(pool, pieces[3], 1));
 	      continue;
 	    }
 	  /* rejoin */
@@ -2710,9 +2206,9 @@ testcase_read(Pool *pool, FILE *fp, const char *testcase, Queue *job, char **res
 	{
 	  int i = strlen(pieces[1]);
 	  s = strchr(pieces[1], '(');
-	  if (!s && pieces[1][i - 1] != ')')
+	  if (!s || pieces[1][i - 1] != ')')
 	    {
-	      pool_debug(pool, SOLV_ERROR, "testcase_read: bad namespace '%s'\n", pieces[1]);
+	      pool_error(pool, 0, "testcase_read: bad namespace '%s'", pieces[1]);
 	    }
 	  else
 	    {
@@ -2775,7 +2271,7 @@ testcase_read(Pool *pool, FILE *fp, const char *testcase, Queue *job, char **res
 		{
 		  FILE *rfp = fopen(rdata, "r");
 		  if (!rfp)
-		    pool_debug(pool, SOLV_ERROR, "testcase_read: could not open '%s'\n", rdata);
+		    pool_error(pool, 0, "testcase_read: could not open '%s'", rdata);
 		  else
 		    {
 		      result = read_file(rfp);
@@ -2790,18 +2286,15 @@ testcase_read(Pool *pool, FILE *fp, const char *testcase, Queue *job, char **res
 	  if (resultflagsp)
 	    *resultflagsp = resultflags;
 	}
-      else if (!strcmp(pieces[0], "nextjob") && npieces == 1)
+      else if (!strcmp(pieces[0], "nextjob"))
 	{
+	  if (npieces == 2 && resultflagsp && !strcmp(pieces[1], "reusesolver"))
+	    *resultflagsp |= TESTCASE_RESULT_REUSE_SOLVER;
 	  break;
 	}
       else if (!strcmp(pieces[0], "disable") && npieces == 3)
 	{
-	  Id p;
-	  if (strcmp(pieces[1], "pkg"))
-	    {
-	      pool_debug(pool, SOLV_ERROR, "testcase_read: bad disable type '%s'\n", pieces[1]);
-	      continue;
-	    }
+	  Id p, pp, jobsel, what = 0;
 	  if (!prepared)
 	    pool_createwhatprovides(pool);
 	  prepared = -1;
@@ -2811,11 +2304,20 @@ testcase_read(Pool *pool, FILE *fp, const char *testcase, Queue *job, char **res
 	      map_init(pool->considered, pool->nsolvables);
 	      map_setall(pool->considered);
 	    }
-	  p = testcase_str2solvid(pool, pieces[2]);
-	  if (p)
+	  jobsel = testcase_str2jobsel(pool, "disable", pieces + 1, npieces - 1, &what);
+	  if (jobsel < 0)
+	    continue;
+	  if (jobsel == SOLVER_SOLVABLE_ALL)
+	    map_empty(pool->considered);
+	  else if (jobsel == SOLVER_SOLVABLE_REPO)
+	    {
+	      Repo *repo = pool_id2repo(pool, what);
+	      Solvable *s;
+	      FOR_REPO_SOLVABLES(repo, p, s)
+		MAPCLR(pool->considered, p);
+	    }
+	  FOR_JOB_SELECT(p, pp, jobsel, what)
 	    MAPCLR(pool->considered, p);
-	  else
-	    pool_debug(pool, SOLV_ERROR, "disable: unknown package '%s'\n", pieces[2]);
 	}
       else if (!strcmp(pieces[0], "feature"))
 	{
@@ -2827,7 +2329,7 @@ testcase_read(Pool *pool, FILE *fp, const char *testcase, Queue *job, char **res
 		  break;
 	      if (!features[j])
 		{
-		  pool_debug(pool, SOLV_ERROR, "testcase_read: missing feature '%s'\n", pieces[i]);
+		  pool_error(pool, 0, "testcase_read: missing feature '%s'", pieces[i]);
 		  missing_features++;
 		}
 	    }
@@ -2854,12 +2356,12 @@ testcase_read(Pool *pool, FILE *fp, const char *testcase, Queue *job, char **res
 		  break;
 	      if (!op->flags)
 		{
-		  pool_debug(pool, SOLV_ERROR, "testcase_read: genid: unknown op '%s'\n", pieces[2]);
+		  pool_error(pool, 0, "testcase_read: genid: unknown op '%s'", pieces[2]);
 		  break;
 		}
 	      if (ngenid < 2)
 		{
-		  pool_debug(pool, SOLV_ERROR, "testcase_read: genid: out of stack\n");
+		  pool_error(pool, 0, "testcase_read: genid: out of stack");
 		  break;
 		}
 	      ngenid -= 2;
@@ -2873,7 +2375,7 @@ testcase_read(Pool *pool, FILE *fp, const char *testcase, Queue *job, char **res
 	    id = testcase_str2dep(pool, pieces[2]);
 	  else
 	    {
-	      pool_debug(pool, SOLV_ERROR, "testcase_read: genid: unknown command '%s'\n", pieces[1]);
+	      pool_error(pool, 0, "testcase_read: genid: unknown command '%s'", pieces[1]);
 	      break;
 	    }
 	  genid[ngenid++] = id;
@@ -2882,14 +2384,22 @@ testcase_read(Pool *pool, FILE *fp, const char *testcase, Queue *job, char **res
 	{
 	  if (strcmp(pieces[1], "name"))
 	    {
-	      pool_debug(pool, SOLV_ERROR, "testcase_read: autoinst: illegal mode\n");
+	      pool_error(pool, 0, "testcase_read: autoinst: illegal mode");
 	      break;
 	    }
 	  queue_push(&autoinstq, pool_str2id(pool, pieces[2], 1));
 	}
+      else if (!strcmp(pieces[0], "evrcmp") && npieces == 3)
+	{
+	  Id evr1 = pool_str2id(pool, pieces[1], 1);
+	  Id evr2 = pool_str2id(pool, pieces[2], 1);
+	  int r = pool_evrcmp(pool, evr1, evr2, EVRCMP_COMPARE);
+	  r = r < 0 ? REL_LT : r > 0 ? REL_GT : REL_EQ;
+	  queue_push2(job, SOLVER_NOOP | SOLVER_SOLVABLE_PROVIDES, pool_rel2id(pool, evr1, evr2, r, 1));
+	}
       else
 	{
-	  pool_debug(pool, SOLV_ERROR, "testcase_read: cannot parse command '%s'\n", pieces[0]);
+	  pool_error(pool, 0, "testcase_read: cannot parse command '%s'", pieces[0]);
 	}
     }
   while (job && ngenid > 0)

@@ -1,4 +1,282 @@
 -------------------------------------------------------------------
+Fri Apr 24 12:00:30 CEST 2020 - mls@suse.de
+
+- Fix solvable swapping messing up idarrays
+- bump version to 0.7.13
+
+-------------------------------------------------------------------
+Mon Apr 20 17:24:21 CEST 2020 - mls@suse.de
+
+- fix ruleinfo of complex dependencies returning the wrong origin
+- bump version to 0.7.12
+
+-------------------------------------------------------------------
+Wed Jan 22 13:52:48 CET 2020 - mls@suse.de
+
+- fixed solv_zchunk decoding error if large chunks are used
+- treat retracted pathes as irrelevant
+- made add_update_target work with multiversion installs
+- bump version to 0.7.11
+
+-------------------------------------------------------------------
+Thu Dec 19 16:29:52 CET 2019 - mls@suse.de
+
+- fix solv_zchunk decoding error if large chunks are used
+  [bnc#1159314]
+
+-------------------------------------------------------------------
+Tue Dec 10 21:02:31 CET 2019 - mls@suse.de
+
+- build with -DENABLE_RPMDB_LIBRPM=1 on SUSE to support
+  multiple rpm database backends
+
+-------------------------------------------------------------------
+Tue Dec 10 14:18:36 CET 2019 - mls@suse.de
+
+- added two new function to make libzypp independent of the rpm
+  database format
+- bump version to 0.7.10
+
+-------------------------------------------------------------------
+Thu Nov 21 16:34:52 CET 2019 - mls@suse.de
+
+- support conda constrains dependencies
+- bump version to 0.7.9
+
+-------------------------------------------------------------------
+Tue Nov 12 11:35:12 CET 2019 - mls@suse.de
+
+- support arch<->noarch package changes when creating patch
+  conflicts from the updateinfo data
+- support for SOLVER_BLACKLIST jobs that block the installation
+  of matched packages unless they are directly selected by an
+  SOLVER_INSTALL job
+- libsolv now also parses the patch status in the updateinfo
+  parser
+- new solvable_matchessolvable() function
+- bump version to 0.7.8
+
+-------------------------------------------------------------------
+Fri Oct 18 10:53:54 CEST 2019 - mls@suse.de
+
+- fix updating of too many packages in focusbest mode
+- fix handling of disabled installed packages in distupgrade
+- new POOL_FLAG_WHATPROVIDESWITHDISABLED pool flag
+- bump version to 0.7.7
+
+-------------------------------------------------------------------
+Wed Aug 28 14:49:19 CEST 2019 - mls@suse.de
+
+- Fix repository priority handling for multiversion packages
+- Make code compatible with swig 4.0, remove obj0 instances
+- repo2solv: support zchunk compressed data
+- bump version to 0.7.6
+
+-------------------------------------------------------------------
+Wed Jul 10 07:48:10 UTC 2019 - Martin Liška <mliska@suse.cz>
+
+- Add -ffat-lto-objects to $optflags as the package provides
+  static libraries
+- Remove NO_BRP_STRIP_DEBUG=true as brp-15-strip-debug will
+  not strip debug info for archives
+
+-------------------------------------------------------------------
+Thu Jun 13 16:15:39 CEST 2019 - mls@suse.de
+
+- make cleandeps jobs on patterns work [bnc#1137977]
+
+-------------------------------------------------------------------
+Wed Jun 12 13:22:40 CEST 2019 - mls@suse.de
+
+- fix favorq leaking between solver runs if the solver is reused
+- fix SOLVER_FLAG_FOCUS_BEST updateing packages without reason
+- be more correct with multiversion packages that obsolete their
+  own name [bnc#1127155]
+- allow building with swig-4.0.0 [bnc#1135749]
+- bump version to 0.7.5
+
+-------------------------------------------------------------------
+Wed Apr 24 15:34:44 CEST 2019 - mls@suse.de
+
+- always prefer to stay with the same package name if there are
+  multiple alternatives [bnc#1131823]
+
+-------------------------------------------------------------------
+Fri Mar 29 15:58:54 CET 2019 - mls@suse.de
+
+- repo_add_rpmdb: do not copy bad solvables from the old solv file
+- fix cleandeps updates not updating all packages
+- experimental DISTTYPE_CONDA and REL_CONDA support
+- bump version to 0.7.4
+
+-------------------------------------------------------------------
+Wed Jan 30 15:51:36 CET 2019 - mls@suse.de
+
+- fixed a couple of null pointer derefs
+  [bnc#1120629] [bnc#1120630] [bnc#1120631]
+  [CVE-2018-20532] [CVE-2018-20533] [CVE-2018-20534]
+- do favor evaluation before pruning allowing to (dis)favor
+  specific package versions
+- no longer disable infarch rules when they don't conflict with
+  the job
+- bump version to 0.7.3
+
+-------------------------------------------------------------------
+Fri Dec  7 15:10:46 CET 2018 - mls@suse.de
+
+- do not autouninstall packages because of forcebest updates
+- support rpm's new '^' version separator
+- support set/get_considered_list in bindings
+- new experimental SOLVER_FLAG_ONLY_NAMESPACE_RECOMMENDED flag
+  [fate#325513]
+- bump version to 0.7.2
+
+-------------------------------------------------------------------
+Wed Oct 31 13:50:22 CET 2018 - mls@suse.de
+
+- fix nasty off-by-one error in repo_write
+- also copy pattern categories from the rpm that defines the
+  pattern [fate#323785]
+- bump version to 0.7.1
+
+-------------------------------------------------------------------
+Wed Oct 24 10:48:56 CEST 2018 - mls@suse.de
+
+- new repowriter interface
+- new selection_make_matchsolvable function
+- dropped support of REPOKEY_TYPE_U32
+- bindings: Selection.flags is now an attribute
+- bump version to 0.7.0
+
+-------------------------------------------------------------------
+Thu Aug  9 17:09:41 CEST 2018 - mls@suse.de
+
+- refactor arch handling
+- add support for zstd and zchunk compression
+- convert repo2solv.sh script into a binary tool
+- bump version to 0.6.35
+
+------------------------------------------------------------------
+Wed Jul 18 14:11:51 UTC 2018 - ngompa13@gmail.com
+
+- Fix compatibility with Mageia and RH/Fedora
+
+------------------------------------------------------------------
+Wed Jul 18 11:02:29 UTC 2018 - tchvatal@suse.com
+
+- Sort a bit with spec-cleaner
+- Use python/ruby/etc condition names to match what other packages
+  do in order to make sure we are enabling/disabling stuff within
+  prjcfg
+- Silence the source unpacking
+- Make sure to execute tests
+
+-------------------------------------------------------------------
+Fri Mar 23 12:02:08 CET 2018 - mls@suse.de
+
+- make sure product files come from /etc/products.d in fallback
+  search [bnc#1086602]
+- bump version to 0.6.34
+
+-------------------------------------------------------------------
+Thu Mar  1 10:52:23 CET 2018 - mls@suse.de
+
+- also use suggests for ordering packages [bnc#1077635]
+
+-------------------------------------------------------------------
+Wed Feb 28 16:29:55 CET 2018 - mls@suse.de
+
+- fix bad assignment in solution refinement that led
+  to a memory leak [bnc#1075978]
+- use license tag instead of doc in the spec file [bnc#1082318]
+- bump version to 0.6.33
+
+-------------------------------------------------------------------
+Tue Feb 13 11:51:11 CET 2018 - mls@suse.de
+
+- fixed bug that could make fileconflict detection very slow
+  in some cases [bnc#953130]
+- bump version to 0.6.32
+
+-------------------------------------------------------------------
+Wed Jan 31 11:41:51 CET 2018 - mls@suse.de
+
+- new ENABLE_RPMDB_LIBRPM/ENABLE_RPMPKG_LIBRPM config options
+- new pool_set_whatprovides function to change the whatprovides
+  data
+- much improved selection code
+- bump version to 0.6.31
+
+-------------------------------------------------------------------
+Tue Oct 24 12:09:32 UTC 2017 - jengelh@inai.de
+
+- Update package descriptions and groups.
+  Replace old $RPM_* variables by macros.
+
+-------------------------------------------------------------------
+Mon Oct 23 11:40:22 CEST 2017 - mls@suse.de
+
+- many fixes and improvements for cleandeps
+- support debian packages with xz compressed control.tar
+- always create dup rules for "distupgrade" jobs
+- use recommends also for ordering packages
+- Fix splitprovides handling with addalreadyrecommended turned off
+  [bnc#1059065]
+- bump version to 0.6.30
+
+-------------------------------------------------------------------
+Thu Sep  7 16:18:20 CEST 2017 - mls@suse.de
+
+- expose solver_get_recommendations in bindings
+- fix bug in solver_prune_to_highest_prio_per_name resulting in
+  bad solver_get_recommendations output
+- support 'without' and 'unless' dependencies
+- fix yumobs rule generation bug
+- Use same heuristic as upstream to determine src rpms
+- bump version to 0.6.29
+
+-------------------------------------------------------------------
+Fri Jun 30 16:37:31 CEST 2017 - mls@suse.de
+
+- make peace with newer perl versions
+- fix memory leak in bindings
+- add pool_best_solvables() function
+- fix 64bit integer parsing from RPM headers
+- bump version to 0.6.28
+
+-------------------------------------------------------------------
+Sun May 28 13:32:15 UTC 2017 - ngompa13@gmail.com
+
+- Enable complex/rich dependencies for CentOS/RHEL 7, matching how
+  libsolv is configured there.
+
+-------------------------------------------------------------------
+Thu May 11 12:41:07 UTC 2017 - ngompa13@gmail.com
+
+- Disable bzip2 and xz/lzma compression support for SLE <= 12
+
+-------------------------------------------------------------------
+Mon May  8 13:15:09 UTC 2017 - ngompa13@gmail.com
+
+- Enable bzip2 and xz/lzma compression support
+- Enable complex/rich dependencies on distributions with RPM 4.13+
+- Simplified CentOS/RHEL conditionals
+- Added Mageia conditionals
+- Fixed a few spec portability issues
+
+-------------------------------------------------------------------
+Tue Apr 25 14:11:05 CEST 2017 - mls@suse.de
+
+- change queue resize code to use adaptive chunk sizes
+- fix potential segfault in testcase_depstr [bnc#1036002]
+- fix performance issues with name = md5sum dependencies
+  [bnc#1035946]
+- improve "forcebest with uninstall" handling
+- make dirid handling more robust
+- build with libxml2 instead of libexpat
+- bump version to 0.6.27
+
+-------------------------------------------------------------------
 Wed Feb 15 11:34:59 CET 2017 - mls@suse.de
 
 - export solvable_matchesdep function, as we now use it in

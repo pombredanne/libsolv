@@ -88,23 +88,6 @@ typedef struct {
 }
 
 #if defined(SWIGPYTHON)
-%typemap(in) Queue {
-  /* Check if is a list */
-  if (PyList_Check($input)) {
-    int size = PyList_Size($input);
-    int i = 0;
-    for (i = 0; i < size; i++) {
-      PyObject *o = PyList_GetItem($input,i);
-      int v;
-      int e = SWIG_AsVal_int(o, &v);
-      if (!SWIG_IsOK(e))
-        SWIG_exception_fail(SWIG_ArgError(e), "list must contain only integers");
-      queue_push(&$1, v);
-    }
-  } else {
-    SWIG_exception_fail(SWIG_TypeError, "list must contain only integers");
-  }
-}
 
 %typemap(out) Queue {
   int i;
@@ -115,7 +98,7 @@ typedef struct {
   $result = o;
 }
 
-%define Queue2Array(type, step, con) %{
+%define Queue2Array(type, step, con) %{ {
   int i;
   int cnt = $1.count / step;
   Id *idp = $1.elements;
@@ -131,30 +114,47 @@ typedef struct {
     }
   queue_free(&$1);
   $result = o;
+}
 %}
+%enddef
 
+%define Array2Queue(asval_meth,typestr) %{ {
+  int i, size;
+  if (!PyList_Check($input))
+    SWIG_exception_fail(SWIG_TypeError, "argument $argnum is not a list");
+  size = PyList_Size($input);
+  for (i = 0; i < size; i++) {
+    PyObject *o = PyList_GetItem($input,i);
+    int v;
+    int e = asval_meth(o, &v);
+    if (!SWIG_IsOK(e))
+      SWIG_exception_fail(SWIG_ArgError(e), "list in argument $argnum must contain only" typestr);
+    queue_push(&$1, v);
+  }
+}
+%}
+%enddef
+
+%define ObjArray2Queue(type, obj2queue) %{ {
+  int i, size;
+  if (!PyList_Check($input))
+    SWIG_exception_fail(SWIG_TypeError, "argument $argnum is not a list");
+  size = PyList_Size($input);
+  for (i = 0; i < size; i++) {
+    PyObject *o = PyList_GetItem($input,i);
+    type obj;
+    int e = SWIG_ConvertPtr(o, (void **)&obj, $descriptor(type), 0 | 0);
+    if (!SWIG_IsOK(e))
+      SWIG_exception_fail(SWIG_ArgError(e), "list in argument $argnum must contain only "`type`);
+    obj2queue;
+  }
+}
+%}
 %enddef
 
 #endif  /* SWIGPYTHON */
 
 #if defined(SWIGPERL)
-%typemap(in) Queue {
-  AV *av;
-  int i, size;
-  if (!SvROK($input) || SvTYPE(SvRV($input)) != SVt_PVAV)
-    SWIG_croak("Argument $argnum is not an array reference.");
-  av = (AV*)SvRV($input);
-  size = av_len(av);
-  for (i = 0; i <= size; i++) {
-    SV **sv = av_fetch(av, i, 0);
-    int v;
-    int e = SWIG_AsVal_int(*sv, &v);
-    if (!SWIG_IsOK(e)) {
-      SWIG_croak("list must contain only integers");
-    }
-    queue_push(&$1, v);
-  }
-}
 /* AV *o = newAV();
  * av_push(o, SvREFCNT_inc(SWIG_From_int($1.elements[i])));
  * $result = newRV_noinc((SV*)o); argvi++;
@@ -170,7 +170,7 @@ typedef struct {
   $result = 0;
 }
 
-%define Queue2Array(type, step, con) %{
+%define Queue2Array(type, step, con) %{ {
   int i;
   int cnt = $1.count / step;
   Id *idp = $1.elements;
@@ -188,6 +188,45 @@ typedef struct {
     }
   queue_free(&$1);
   $result = 0;
+}
+%}
+%enddef
+
+%define Array2Queue(asval_meth,typestr) %{ {
+  AV *av;
+  int i, size;
+  if (!SvROK($input) || SvTYPE(SvRV($input)) != SVt_PVAV)
+    SWIG_croak("argument $argnum is not an array reference.");
+  av = (AV*)SvRV($input);
+  size = av_len(av);
+  for (i = 0; i <= size; i++) {
+    SV **sv = av_fetch(av, i, 0);
+    int v;
+    int e = asval_meth(*sv, &v);
+    if (!SWIG_IsOK(e))
+      SWIG_croak("array in argument $argnum must contain only " typestr);
+    queue_push(&$1, v);
+  }
+}
+%}
+%enddef
+
+%define ObjArray2Queue(type, obj2queue) %{ {
+  AV *av;
+  int i, size;
+  if (!SvROK($input) || SvTYPE(SvRV($input)) != SVt_PVAV)
+    SWIG_croak("argument $argnum is not an array reference.");
+  av = (AV*)SvRV($input);
+  size = av_len(av);
+  for (i = 0; i <= size; i++) {
+    SV **sv = av_fetch(av, i, 0);
+    type obj;
+    int e = SWIG_ConvertPtr(*sv, (void **)&obj, $descriptor(type), 0 | 0);
+    if (!SWIG_IsOK(e))
+      SWIG_exception_fail(SWIG_ArgError(e), "list in argument $argnum must contain only "`type`);
+    obj2queue;
+  }
+}
 %}
 %enddef
 
@@ -195,21 +234,6 @@ typedef struct {
 
 
 #if defined(SWIGRUBY)
-%typemap(in) Queue {
-  int size, i;
-  VALUE *o, ary;
-  ary = rb_Array($input);
-  size = RARRAY_LEN(ary);
-  i = 0;
-  o = RARRAY_PTR(ary);
-  for (i = 0; i < size; i++, o++) {
-    int v;
-    int e = SWIG_AsVal_int(*o, &v);
-    if (!SWIG_IsOK(e))
-      SWIG_exception_fail(SWIG_TypeError, "list must contain only integers");
-    queue_push(&$1, v);
-  }
-}
 %typemap(out) Queue {
   int i;
   VALUE o = rb_ary_new2($1.count);
@@ -218,13 +242,8 @@ typedef struct {
   queue_free(&$1);
   $result = o;
 }
-%typemap(arginit) Queue {
-  queue_init(&$1);
-}
-%typemap(freearg) Queue {
-  queue_free(&$1);
-}
-%define Queue2Array(type, step, con) %{
+
+%define Queue2Array(type, step, con) %{ {
   int i;
   int cnt = $1.count / step;
   Id *idp = $1.elements;
@@ -240,32 +259,49 @@ typedef struct {
     }
   queue_free(&$1);
   $result = o;
+}
+%}
+%enddef
+
+%define Array2Queue(asval_meth,typestr) %{ {
+  int size, i;
+  VALUE *o, ary;
+  ary = rb_Array($input);
+  size = RARRAY_LEN(ary);
+  i = 0;
+  o = RARRAY_PTR(ary);
+  for (i = 0; i < size; i++, o++) {
+    int v;
+    int e = asval_meth(*o, &v);
+    if (!SWIG_IsOK(e))
+      SWIG_exception_fail(SWIG_TypeError, "list in argument $argnum must contain only " typestr);
+    queue_push(&$1, v);
+  }
+}
+%}
+%enddef
+
+%define ObjArray2Queue(type, obj2queue) %{ {
+  int size, i;
+  VALUE *o, ary;
+  ary = rb_Array($input);
+  size = RARRAY_LEN(ary);
+  i = 0;
+  o = RARRAY_PTR(ary);
+  for (i = 0; i < size; i++, o++) {
+    type obj;
+    int e = SWIG_ConvertPtr(*o, (void **)&obj, $descriptor(type), 0 | 0);
+    if (!SWIG_IsOK(e))
+      SWIG_exception_fail(SWIG_ArgError(e), "list in argument $argnum must contain only "`type`);
+    obj2queue;
+  }
+}
 %}
 %enddef
 
 #endif  /* SWIGRUBY */
 
 #if defined(SWIGTCL)
-%typemap(in) Queue {
-  /* Check if is a list */
-  int size = 0;
-  int i = 0;
-
-  if (TCL_OK != Tcl_ListObjLength(interp, $input, &size))
-    SWIG_exception_fail(SWIG_TypeError, "argument is not a list");
-  for (i = 0; i < size; i++) {
-    Tcl_Obj *o = NULL;
-    int e, v;
-
-    if (TCL_OK != Tcl_ListObjIndex(interp, $input, i, &o))
-      SWIG_exception_fail(SWIG_IndexError, "failed to retrieve a list member");
-    e = SWIG_AsVal_int SWIG_TCL_CALL_ARGS_2(o, &v);
-    if (!SWIG_IsOK(e))
-      SWIG_exception_fail(SWIG_ArgError(e), "list must contain only integers");
-    queue_push(&$1, v);
-  }
-}
-
 %typemap(out) Queue {
   Tcl_Obj *objvx[$1.count];
   int i;
@@ -297,40 +333,62 @@ typedef struct {
     }
     queue_free(&$1);
     Tcl_SetObjResult(interp, Tcl_NewListObj(cnt, objvx));
-  }
+ }
 %}
-
 %enddef
 
-%typemap(in) Queue solvejobs {
-  /* Check if is a list */
+%define Array2Queue(asval_meth,typestr) %{ {
   int size = 0;
   int i = 0;
-
   if (TCL_OK != Tcl_ListObjLength(interp, $input, &size))
-    SWIG_exception_fail(SWIG_TypeError, "argument is not a list");
+    SWIG_exception_fail(SWIG_TypeError, "argument $argnum is not a list");
   for (i = 0; i < size; i++) {
     Tcl_Obj *o = NULL;
-    void *jp;
-    Job *j;
-    int e;
+    int e, v;
 
     if (TCL_OK != Tcl_ListObjIndex(interp, $input, i, &o))
       SWIG_exception_fail(SWIG_IndexError, "failed to retrieve a list member");
-    e = SWIG_ConvertPtr(o, &jp ,SWIGTYPE_p_Job, 0 |  0 );
+    e = SWIG_AsVal_int SWIG_TCL_CALL_ARGS_2(o, &v);
     if (!SWIG_IsOK(e))
-      SWIG_exception_fail(SWIG_ArgError(e), "list member is not a Job");
-    j = (Job *)jp;
-    queue_push2(&$1, j->how, j->what);
+      SWIG_exception_fail(SWIG_ArgError(e), "list in argument $argnum must contain only " typestr);
+    queue_push(&$1, v);
   }
 }
+%}
+%enddef
+
+%define ObjArray2Queue(type, obj2queue) %{ {
+  int size = 0;
+  int i = 0;
+  if (TCL_OK != Tcl_ListObjLength(interp, $input, &size))
+    SWIG_exception_fail(SWIG_TypeError, "argument $argnum is not a list");
+  for (i = 0; i < size; i++) {
+    Tcl_Obj *o = NULL;
+    type obj;
+    int e;
+    if (TCL_OK != Tcl_ListObjIndex(interp, $input, i, &o))
+      SWIG_exception_fail(SWIG_IndexError, "failed to retrieve a list member");
+    e = SWIG_ConvertPtr(o, (void **)&obj, $descriptor(type), 0 | 0);
+    if (!SWIG_IsOK(e))
+      SWIG_exception_fail(SWIG_ArgError(e), "list in argument $argnum must contain only "`type`);
+    obj2queue;
+  }
+}
+%}
+%enddef
 
 #endif  /* SWIGTCL */
+
+%typemap(in) Queue Array2Queue(SWIG_AsVal_int, "integers")
+%typemap(in) Queue solvejobs ObjArray2Queue(Job *, queue_push2(&$1, obj->how, obj->what))
+%typemap(in) Queue solvables ObjArray2Queue(XSolvable *, queue_push(&$1, obj->id))
+
 
 
 #if defined(SWIGPERL)
 
-/* work around a swig bug */
+/* work around a swig bug for swig versions < 2.0.5 */
+#if SWIG_VERSION < 0x020005
 %{
 #undef SWIG_CALLXS
 #ifdef PERL_OBJECT
@@ -343,6 +401,7 @@ typedef struct {
 #  endif
 #endif
 %}
+#endif
 
 
 %define perliter(class)
@@ -571,7 +630,7 @@ SWIG_AsValDepId(void *obj, int *val) {
 #if defined(SWIGRUBY)
   SWIG_ConvertPtr(self, &argp1,SWIGTYPE_p_Pool, SWIG_POINTER_DISOWN |  0 );
 #elif defined(SWIGPYTHON)
-  SWIG_ConvertPtr(obj0, &argp1,SWIGTYPE_p_Pool, SWIG_POINTER_DISOWN |  0 );
+  SWIG_ConvertPtr($self, &argp1,SWIGTYPE_p_Pool, SWIG_POINTER_DISOWN |  0 );
 #elif defined(SWIGPERL)
   SWIG_ConvertPtr(ST(0), &argp1,SWIGTYPE_p_Pool, SWIG_POINTER_DISOWN |  0 );
 #elif defined(SWIGTCL)
@@ -586,6 +645,33 @@ SWIG_AsValDepId(void *obj, int *val) {
   $result = SWIG_From_int((int)(0));
 #endif
 }
+
+
+/**
+ ** return $self
+ **/
+
+%define returnself(func)
+#if defined(SWIGPYTHON)
+%typemap(out) void func {
+  $result = $self;
+  Py_INCREF($result);
+}
+#elif defined(SWIGPERL)
+%typemap(out) void func {
+  $result = sv_2mortal(SvREFCNT_inc(ST(0)));argvi++;
+}
+#elif defined(SWIGRUBY)
+%typemap(ret) void func {
+  return self;
+}
+#elif defined(SWIGTCL)
+%typemap(out) void func {
+  Tcl_IncrRefCount(objv[1]);
+  Tcl_SetObjResult(interp, objv[1]);
+}
+#endif
+%enddef
 
 
 /**
@@ -662,6 +748,9 @@ typedef int bool;
 #endif
 #ifdef SUSE
 #include "repo_autopattern.h"
+#endif
+#if defined(ENABLE_COMPLEX_DEPS) && (defined(ENABLE_SUSEREPO) || defined(ENABLE_RPMMD) || defined(ENABLE_RPMDB) || defined(ENABLE_RPMPKG))
+#include "pool_parserpmrichdep.h"
 #endif
 #include "solv_xfopen.h"
 #include "testcase.h"
@@ -932,15 +1021,25 @@ typedef int Id;
 %constant int REL_EQ;
 %constant int REL_GT;
 %constant int REL_LT;
-%constant int REL_ARCH;
 %constant int REL_AND;
 %constant int REL_OR;
 %constant int REL_WITH;
+%constant int REL_NAMESPACE;
+%constant int REL_ARCH;
+%constant int REL_FILECONFLICT;
 %constant int REL_COND;
+%constant int REL_COMPAT;
+%constant int REL_KIND;
+%constant int REL_MULTIARCH;
 %constant int REL_ELSE;
+%constant int REL_ERROR;
+%constant int REL_WITHOUT;
+%constant int REL_UNLESS;
+%constant int REL_CONDA;
 
 typedef struct {
   Pool* const pool;
+  int const flags;
 } Selection;
 
 typedef struct {
@@ -1049,7 +1148,7 @@ SolvFp *solvfp_xfopen_fd(const char *fn, int fd, const char *mode = 0);
     fd = dup(fd);
     if (fd == -1)
       return 0;
-    fcntl(fd, F_SETFD, FD_CLOEXEC);
+    solv_setcloexec(fd, 1);
     fp = solv_xfopen_fd(fn, fd, mode);
     if (!fp) {
       close(fd);
@@ -1066,7 +1165,7 @@ SolvFp *solvfp_xfopen_fd(const char *fn, int fd, const char *mode = 0);
     if (!fp)
       return 0;
     if (fileno(fp) != -1)
-      fcntl(fileno(fp), F_SETFD, FD_CLOEXEC);
+      solv_setcloexec(fileno(fp), 1);
     sfp = solv_calloc(1, sizeof(SolvFp));
     sfp->fp = fp;
     return sfp;
@@ -1148,7 +1247,7 @@ typedef struct {
   void cloexec(bool state) {
     if (!$self->fp || fileno($self->fp) == -1)
       return;
-    fcntl(fileno($self->fp), F_SETFD, state ? FD_CLOEXEC : 0);
+    solv_setcloexec(fileno($self->fp), state);
   }
 }
 
@@ -1251,8 +1350,18 @@ typedef struct {
   static const Id SELECTION_GLOB = SELECTION_GLOB;
   static const Id SELECTION_FLAT = SELECTION_FLAT;
   static const Id SELECTION_NOCASE = SELECTION_NOCASE;
+  static const Id SELECTION_SKIP_KIND = SELECTION_SKIP_KIND;
+  static const Id SELECTION_MATCH_DEPSTR = SELECTION_MATCH_DEPSTR;
   static const Id SELECTION_SOURCE_ONLY = SELECTION_SOURCE_ONLY;
   static const Id SELECTION_WITH_SOURCE = SELECTION_WITH_SOURCE;
+  static const Id SELECTION_WITH_DISABLED = SELECTION_WITH_DISABLED;
+  static const Id SELECTION_WITH_BADARCH = SELECTION_WITH_BADARCH;
+  static const Id SELECTION_WITH_ALL = SELECTION_WITH_ALL;
+  static const Id SELECTION_ADD = SELECTION_ADD;
+  static const Id SELECTION_SUBTRACT = SELECTION_SUBTRACT;
+  static const Id SELECTION_FILTER = SELECTION_FILTER;
+  static const Id SELECTION_FILTER_KEEP_IFEMPTY = SELECTION_FILTER_KEEP_IFEMPTY;
+  static const Id SELECTION_FILTER_SWAPPED = SELECTION_FILTER_SWAPPED;
 
   Selection(Pool *pool) {
     Selection *s;
@@ -1265,21 +1374,27 @@ typedef struct {
     queue_free(&$self->q);
     solv_free($self);
   }
-  int flags() {
-    return $self->flags;
-  }
 #ifdef SWIGRUBY
   %rename("isempty?") isempty;
 #endif
   bool isempty() {
     return $self->q.count == 0;
   }
+  %newobject clone;
+  Selection *clone(int flags = 0) {
+    Selection *s = new_Selection($self->pool);
+    queue_init_clone(&s->q, &$self->q);
+    s->flags = $self->flags;
+    return s;
+  }
+returnself(filter)
   void filter(Selection *lsel) {
     if ($self->pool != lsel->pool)
       queue_empty(&$self->q);
     else
       selection_filter($self->pool, &$self->q, &lsel->q);
   }
+returnself(add)
   void add(Selection *lsel) {
     if ($self->pool == lsel->pool)
       {
@@ -1287,9 +1402,41 @@ typedef struct {
         $self->flags |= lsel->flags;
       }
   }
+returnself(add_raw)
   void add_raw(Id how, Id what) {
     queue_push2(&$self->q, how, what);
   }
+returnself(subtract)
+  void subtract(Selection *lsel) {
+    if ($self->pool == lsel->pool)
+      selection_subtract($self->pool, &$self->q, &lsel->q);
+  }
+
+returnself(select)
+  void select(const char *name, int flags) {
+    if ((flags & SELECTION_MODEBITS) == 0)
+      flags |= SELECTION_FILTER | SELECTION_WITH_ALL;
+    $self->flags = selection_make($self->pool, &$self->q, name, flags);
+  }
+returnself(matchdeps)
+  void matchdeps(const char *name, int flags, Id keyname, Id marker = -1) {
+    if ((flags & SELECTION_MODEBITS) == 0)
+      flags |= SELECTION_FILTER | SELECTION_WITH_ALL;
+    $self->flags = selection_make_matchdeps($self->pool, &$self->q, name, flags, keyname, marker);
+  }
+returnself(matchdepid)
+  void matchdepid(DepId dep, int flags, Id keyname, Id marker = -1) {
+    if ((flags & SELECTION_MODEBITS) == 0)
+      flags |= SELECTION_FILTER | SELECTION_WITH_ALL;
+    $self->flags = selection_make_matchdepid($self->pool, &$self->q, dep, flags, keyname, marker);
+  }
+returnself(matchsolvable)
+  void matchsolvable(XSolvable *solvable, int flags, Id keyname, Id marker = -1) {
+    if ((flags & SELECTION_MODEBITS) == 0)
+      flags |= SELECTION_FILTER | SELECTION_WITH_ALL;
+    $self->flags = selection_make_matchsolvable($self->pool, &$self->q, solvable->id, flags, keyname, marker);
+  }
+
   %typemap(out) Queue jobs Queue2Array(Job *, 2, new_Job(arg1->pool, id, idp[1]));
   %newobject jobs;
   Queue jobs(int flags) {
@@ -1602,7 +1749,7 @@ typedef struct {
     int result, ecode = 0, vresult = 0;
     Tcl_Obj *objvx[2];
     objvx[0] = callback_var->obj;
-    objvx[1] = SWIG_NewInstanceObj(SWIG_as_voidptr(xd), SWIGTYPE_p_XRepodata, 0); 
+    objvx[1] = SWIG_NewInstanceObj(SWIG_as_voidptr(xd), SWIGTYPE_p_XRepodata, 0);
     Tcl_IncrRefCount(objvx[1]);
     result = Tcl_EvalObjv(interp, sizeof(objvx)/sizeof(*objvx), objvx, TCL_EVAL_GLOBAL);
     Tcl_DecrRefCount(objvx[1]);
@@ -1679,6 +1826,13 @@ typedef struct {
     Id id = pool_str2id($self, str, create);
     return new_Dep($self, id);
   }
+#if defined(ENABLE_COMPLEX_DEPS) && (defined(ENABLE_SUSEREPO) || defined(ENABLE_RPMMD) || defined(ENABLE_RPMDB) || defined(ENABLE_RPMPKG))
+  %newobject Dep;
+  Dep *parserpmrichdep(const char *str) {
+    Id id = pool_parserpmrichdep($self, str);
+    return new_Dep($self, id);
+  }
+#endif
   const char *id2str(Id id) {
     return pool_id2str($self, id);
   }
@@ -1833,9 +1987,35 @@ typedef struct {
       queue_push(&q, p);
     return q;
   }
+  %typemap(out) Queue best_solvables Queue2Array(XSolvable *, 1, new_XSolvable(arg1, id));
+  %newobject best_solvables;
+  Queue best_solvables(Queue solvables, int flags=0) {
+    Queue q;
+    queue_init_clone(&q, &solvables);
+    pool_best_solvables($self, &q, flags);
+    return q;
+  }
 
   Id towhatprovides(Queue q) {
     return pool_queuetowhatprovides($self, &q);
+  }
+
+  void set_namespaceproviders(DepId ns, DepId evr, bool value=1) {
+    Id dep = pool_rel2id($self, ns, evr, REL_NAMESPACE, 1);
+    pool_set_whatprovides($self, dep, value ? 2 : 1);
+  }
+
+  void flush_namespaceproviders(DepId ns, DepId evr) {
+    pool_flush_namespaceproviders($self, ns, evr);
+  }
+
+  %typemap(out) Queue whatcontainsdep Queue2Array(XSolvable *, 1, new_XSolvable(arg1, id));
+  %newobject whatcontainsdep;
+  Queue whatcontainsdep(Id keyname, DepId dep, Id marker = -1) {
+    Queue q;
+    queue_init(&q);
+    pool_whatcontainsdep($self, keyname, dep, &q, marker);
+    return q;
   }
 
   %typemap(out) Queue whatmatchesdep Queue2Array(XSolvable *, 1, new_XSolvable(arg1, id));
@@ -1844,6 +2024,15 @@ typedef struct {
     Queue q;
     queue_init(&q);
     pool_whatmatchesdep($self, keyname, dep, &q, marker);
+    return q;
+  }
+
+  %typemap(out) Queue whatmatchessolvable Queue2Array(XSolvable *, 1, new_XSolvable(arg1, id));
+  %newobject whatmatchessolvable;
+  Queue whatmatchessolvable(Id keyname, XSolvable *pool_solvable, Id marker = -1) {
+    Queue q;
+    queue_init(&q);
+    pool_whatmatchessolvable($self, keyname, pool_solvable->id, &q, marker);
     return q;
   }
 
@@ -1856,7 +2045,7 @@ typedef struct {
       return 0;
     if (id == ARCH_SRC || id == ARCH_NOSRC || id == ARCH_NOARCH)
       return 1;
-    if (pool->id2arch && (id > pool->lastarch || !pool->id2arch[id]))
+    if (pool->id2arch && pool_arch2score(pool, id) == 0)
       return 0;
     return 1;
   }
@@ -1883,9 +2072,90 @@ typedef struct {
     return sel;
   }
 
-  void setpooljobs_helper(Queue jobs) {
+  %newobject matchdeps;
+  Selection *matchdeps(const char *name, int flags, Id keyname, Id marker = -1) {
+    Selection *sel = new_Selection($self);
+    sel->flags = selection_make_matchdeps($self, &sel->q, name, flags, keyname, marker);
+    return sel;
+  }
+
+  %newobject matchdepid;
+  Selection *matchdepid(DepId dep, int flags, Id keyname, Id marker = -1) {
+    Selection *sel = new_Selection($self);
+    sel->flags = selection_make_matchdepid($self, &sel->q, dep, flags, keyname, marker);
+    return sel;
+  }
+
+  %newobject matchsolvable;
+  Selection *matchsolvable(XSolvable *solvable, int flags, Id keyname, Id marker = -1) {
+    Selection *sel = new_Selection($self);
+    sel->flags = selection_make_matchsolvable($self, &sel->q, solvable->id, flags, keyname, marker);
+    return sel;
+  }
+
+  Queue get_considered_list() {
+    Queue q;
+    queue_init(&q);
+    int i;
+    for (i = 2; i < $self->nsolvables; i++) {
+      if ($self->solvables[i].repo && (!$self->considered || MAPTST($self->considered, i)))
+        queue_push(&q, i);
+    }
+    return q;
+  }
+
+  Queue get_disabled_list() {
+    Queue q;
+    queue_init(&q);
+    int i;
+    for (i = 2; i < $self->nsolvables; i++) {
+      if ($self->solvables[i].repo && ($self->considered && !MAPTST($self->considered, i)))
+        queue_push(&q, i);
+    }
+    return q;
+  }
+
+  void set_considered_list(Queue q) {
+    int i;
+    Id p;
+    if (!$self->considered) {
+      $self->considered = solv_calloc(1, sizeof(Map));
+      map_init($self->considered, $self->nsolvables);
+    }
+    map_empty($self->considered);
+    MAPSET($self->considered, 1);
+    for (i = 0; i < q.count; i++) {
+      p = q.elements[i];
+      if (p > 0 && p < $self->nsolvables)
+        MAPSET($self->considered, p);
+    }
+  }
+
+  void set_disabled_list(Queue q) {
+    int i;
+    Id p;
+    if (!q.count) {
+      if ($self->considered) {
+        map_free($self->considered);
+        $self->considered = solv_free($self->considered);
+      }
+      return;
+    }
+    if (!$self->considered) {
+      $self->considered = solv_calloc(1, sizeof(Map));
+      map_init($self->considered, $self->nsolvables);
+    }
+    map_setall($self->considered);
+    for (i = 0; i < q.count; i++) {
+      p = q.elements[i];
+      if (p > 0 && p < $self->nsolvables)
+        MAPCLR($self->considered, p);
+    }
+  }
+
+  void setpooljobs(Queue solvejobs) {
     queue_free(&$self->pooljobs);
-    queue_init_clone(&$self->pooljobs, &jobs);
+    queue_init_clone(&$self->pooljobs, &solvejobs);
   }
   %typemap(out) Queue getpooljobs Queue2Array(Job *, 2, new_Job(arg1, id, idp[1]));
   %newobject getpooljobs;
@@ -1895,36 +2165,6 @@ typedef struct {
     return q;
   }
 
-#if defined(SWIGPYTHON)
-  %pythoncode {
-    def setpooljobs(self, jobs):
-      j = []
-      for job in jobs: j += [job.how, job.what]
-      self.setpooljobs_helper(j)
-  }
-#endif
-#if defined(SWIGPERL)
-  %perlcode {
-    sub solv::Solver::setpooljobs {
-      my ($self, $jobs) = @_;
-      my @j = map {($_->{'how'}, $_->{'what'})} @$jobs;
-      return $self->setpooljobs_helper(\@j);
-    }
-  }
-#endif
-#if defined(SWIGRUBY)
-%init %{
-rb_eval_string(
-    "class Solv::Pool\n"
-    "  def setpooljobs(jobs)\n"
-    "    jl = []\n"
-    "    jobs.each do |j| ; jl << j.how << j.what ; end\n"
-    "    setpooljobs_helper(jl)\n"
-    "  end\n"
-    "end\n"
-  );
-%}
-#endif
 }
 
 %extend Repo {
@@ -2603,7 +2843,6 @@ rb_eval_string(
 #ifdef SWIGPERL
   perliter(solv::Pool_repo_iterator)
 #endif
-  %newobject __next__;
   Repo *__next__() {
     Pool *pool = $self->pool;
     if ($self->id >= pool->nrepos)
@@ -2619,7 +2858,7 @@ rb_eval_string(
   void each() {
     Repo *n;
     while ((n = Pool_repo_iterator___next__($self)) != 0) {
-      rb_yield(SWIG_NewPointerObj(SWIG_as_voidptr(n), SWIGTYPE_p_Repo, SWIG_POINTER_OWN | 0));
+      rb_yield(SWIG_NewPointerObj(SWIG_as_voidptr(n), SWIGTYPE_p_Repo, 0 | 0));
     }
   }
 #endif
@@ -2823,6 +3062,9 @@ rb_eval_string(
   }
   const char *lookup_location(unsigned int *OUTPUT) {
     return solvable_lookup_location($self->pool->solvables + $self->id, OUTPUT);
+  }
+  const char *lookup_sourcepkg() {
+    return solvable_lookup_sourcepkg($self->pool->solvables + $self->id);
   }
   %newobject Dataiterator;
   Dataiterator *Dataiterator(Id key, const char *match = 0, int flags = 0) {
@@ -3317,6 +3559,7 @@ rb_eval_string(
   static const int SOLVER_FLAG_FOCUS_BEST = SOLVER_FLAG_FOCUS_BEST;
   static const int SOLVER_FLAG_STRONG_RECOMMENDS = SOLVER_FLAG_STRONG_RECOMMENDS;
   static const int SOLVER_FLAG_INSTALL_ALSO_UPDATES = SOLVER_FLAG_INSTALL_ALSO_UPDATES;
+  static const int SOLVER_FLAG_ONLY_NAMESPACE_RECOMMENDED = SOLVER_FLAG_ONLY_NAMESPACE_RECOMMENDED;
 
   static const int SOLVER_REASON_UNRELATED = SOLVER_REASON_UNRELATED;
   static const int SOLVER_REASON_UNIT_RULE = SOLVER_REASON_UNIT_RULE;
@@ -3343,49 +3586,7 @@ rb_eval_string(
   int get_flag(int flag) {
     return solver_get_flag($self, flag);
   }
-#if defined(SWIGPYTHON)
-  %pythoncode {
-    def solve(self, jobs):
-      j = []
-      for job in jobs: j += [job.how, job.what]
-      return self.solve_helper(j)
-  }
-#endif
-#if defined(SWIGPERL)
-  %perlcode {
-    sub solv::Solver::solve {
-      my ($self, $jobs) = @_;
-      my @j = map {($_->{'how'}, $_->{'what'})} @$jobs;
-      return $self->solve_helper(\@j);
-    }
-  }
-#endif
-#if defined(SWIGRUBY)
-%init %{
-rb_eval_string(
-    "class Solv::Solver\n"
-    "  def solve(jobs)\n"
-    "    jl = []\n"
-    "    jobs.each do |j| ; jl << j.how << j.what ; end\n"
-    "    solve_helper(jl)\n"
-    "  end\n"
-    "end\n"
-  );
-%}
-#endif
-  %typemap(out) Queue solve_helper Queue2Array(Problem *, 1, new_Problem(arg1, id));
-  %newobject solve_helper;
-  Queue solve_helper(Queue jobs) {
-    Queue q;
-    int i, cnt;
-    queue_init(&q);
-    solver_solve($self, &jobs);
-    cnt = solver_problem_count($self);
-    for (i = 1; i <= cnt; i++)
-      queue_push(&q, i);
-    return q;
-  }
-#if defined(SWIGTCL)
+
   %typemap(out) Queue solve Queue2Array(Problem *, 1, new_Problem(arg1, id));
   %newobject solve;
   Queue solve(Queue solvejobs) {
@@ -3398,7 +3599,6 @@ rb_eval_string(
       queue_push(&q, i);
     return q;
   }
-#endif
 
   %newobject transaction;
   Transaction *transaction() {
@@ -3500,6 +3700,23 @@ rb_eval_string(
           q.elements[j++] = q.elements[i];
       queue_truncate(&q, j);
     }
+    return q;
+  }
+
+  %typemap(out) Queue get_recommended Queue2Array(XSolvable *, 1, new_XSolvable(arg1->pool, id));
+  %newobject get_recommended;
+  Queue get_recommended(bool noselected=0) {
+    Queue q;
+    queue_init(&q);
+    solver_get_recommendations($self, &q, NULL, noselected);
+    return q;
+  }
+  %typemap(out) Queue get_suggested Queue2Array(XSolvable *, 1, new_XSolvable(arg1->pool, id));
+  %newobject get_suggested;
+  Queue get_suggested(bool noselected=0) {
+    Queue q;
+    queue_init(&q);
+    solver_get_recommendations($self, NULL, &q, noselected);
     return q;
   }
 }
@@ -3626,7 +3843,7 @@ rb_eval_string(
   int steptype(XSolvable *s, int mode) {
     return transaction_type($self, s->id, mode);
   }
-  int calc_installsizechange() {
+  long long calc_installsizechange() {
     return transaction_calc_installsizechange($self);
   }
   void order(int flags=0) {
@@ -3769,8 +3986,14 @@ rb_eval_string(
   void set_id(Id solvid, Id keyname, DepId id) {
     repodata_set_id(repo_id2repodata($self->repo, $self->id), solvid, keyname, id);
   }
+  void set_num(Id solvid, Id keyname, unsigned long long num) {
+    repodata_set_num(repo_id2repodata($self->repo, $self->id), solvid, keyname, num);
+  }
   void set_str(Id solvid, Id keyname, const char *str) {
     repodata_set_str(repo_id2repodata($self->repo, $self->id), solvid, keyname, str);
+  }
+  void set_void(Id solvid, Id keyname) {
+    repodata_set_void(repo_id2repodata($self->repo, $self->id), solvid, keyname);
   }
   void set_poolstr(Id solvid, Id keyname, const char *str) {
     repodata_set_poolstr(repo_id2repodata($self->repo, $self->id), solvid, keyname, str);
@@ -3786,8 +4009,26 @@ rb_eval_string(
     if (buf)
       repodata_set_bin_checksum(repo_id2repodata($self->repo, $self->id), solvid, keyname, solv_chksum_get_type(chksum), buf);
   }
+  void set_sourcepkg(Id solvid, const char *sourcepkg) {
+    repodata_set_sourcepkg(repo_id2repodata($self->repo, $self->id), solvid, sourcepkg);
+  }
+  void set_location(Id solvid, unsigned int mediano, const char *location) {
+    repodata_set_location(repo_id2repodata($self->repo, $self->id), solvid, mediano, 0, location);
+  }
+  void unset(Id solvid, Id keyname) {
+    repodata_unset(repo_id2repodata($self->repo, $self->id), solvid, keyname);
+  }
   const char *lookup_str(Id solvid, Id keyname) {
     return repodata_lookup_str(repo_id2repodata($self->repo, $self->id), solvid, keyname);
+  }
+  Id lookup_id(Id solvid, Id keyname) {
+    return repodata_lookup_id(repo_id2repodata($self->repo, $self->id), solvid, keyname);
+  }
+  unsigned long long lookup_num(Id solvid, Id keyname, unsigned long long notfound = 0) {
+    return repodata_lookup_num(repo_id2repodata($self->repo, $self->id), solvid, keyname, notfound);
+  }
+  bool lookup_void(Id solvid, Id keyname) {
+    return repodata_lookup_void(repo_id2repodata($self->repo, $self->id), solvid, keyname);
   }
   Queue lookup_idarray(Id solvid, Id keyname) {
     Queue r;
@@ -3811,6 +4052,18 @@ rb_eval_string(
   }
   bool write(FILE *fp) {
     return repodata_write(repo_id2repodata($self->repo, $self->id), fp) == 0;
+  }
+  Id str2dir(const char *dir, bool create=1) {
+    Repodata *data = repo_id2repodata($self->repo, $self->id);
+    return repodata_str2dir(data, dir, create);
+  }
+  const char *dir2str(Id did, const char *suf = 0) {
+    Repodata *data = repo_id2repodata($self->repo, $self->id);
+    return repodata_dir2str(data, did, suf);
+  }
+  void add_dirstr(Id solvid, Id keyname, Id dir, const char *str) {
+    Repodata *data = repo_id2repodata($self->repo, $self->id);
+    repodata_add_dirstr(data, solvid, keyname, dir, str);
   }
   bool add_solv(FILE *fp, int flags = 0) {
     Repodata *data = repo_id2repodata($self->repo, $self->id);

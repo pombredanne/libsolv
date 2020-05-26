@@ -24,7 +24,6 @@
 #include "evr.h"
 #include "solverdebug.h"
 
-
 /**********************************************************************************/
 
 /* a problem is an item on the solver's problem list. It can either be >0, in that
@@ -32,10 +31,9 @@
  * consisting of multiple job rules.
  */
 
-void
+static void
 solver_disableproblem(Solver *solv, Id v)
 {
-  Rule *r;
   int i;
   Id *jp;
 
@@ -62,30 +60,30 @@ solver_disableproblem(Solver *solv, Id v)
 	  return;
 	}
       solver_disablerule(solv, solv->rules + v);
-#if 0
-      /* XXX: doesn't work */
-      if (v >= solv->updaterules && v < solv->updaterules_end)
-	{
-	  /* enable feature rule if we disabled the update rule */
-	  r = solv->rules + (v - solv->updaterules + solv->featurerules);
-	  if (r->p)
-	    solver_enablerule(solv, r);
-	}
-#endif
       return;
     }
   v = -(v + 1);
   jp = solv->ruletojob.elements;
-  for (i = solv->jobrules, r = solv->rules + i; i < solv->jobrules_end; i++, r++, jp++)
+  if (solv->bestrules_info)
+    {
+      int ni = solv->bestrules_up - solv->bestrules;
+      for (i = 0; i < ni; i++)
+	{
+	  int j = solv->bestrules_info[i];
+	  if (j < 0 && jp[-j - solv->jobrules] == v)
+	    solver_disablerule(solv, solv->rules + solv->bestrules + i);
+	}
+    }
+  for (i = solv->jobrules; i < solv->jobrules_end; i++, jp++)
     if (*jp == v)
-      solver_disablerule(solv, r);
+      solver_disablerule(solv, solv->rules + i);
 }
 
 /*-------------------------------------------------------------------
  * enableproblem
  */
 
-void
+static void
 solver_enableproblem(Solver *solv, Id v)
 {
   Rule *r;
@@ -133,9 +131,189 @@ solver_enableproblem(Solver *solv, Id v)
     }
   v = -(v + 1);
   jp = solv->ruletojob.elements;
-  for (i = solv->jobrules, r = solv->rules + i; i < solv->jobrules_end; i++, r++, jp++)
+  if (solv->bestrules_info)
+    {
+      int ni = solv->bestrules_up - solv->bestrules;
+      for (i = 0; i < ni; i++)
+	{
+	  int j = solv->bestrules_info[i];
+	  if (j < 0 && jp[-j - solv->jobrules] == v)
+	    solver_enablerule(solv, solv->rules + solv->bestrules + i);
+	}
+    }
+  for (i = solv->jobrules; i < solv->jobrules_end; i++, jp++)
     if (*jp == v)
-      solver_enablerule(solv, r);
+      solver_enablerule(solv, solv->rules + i);
+}
+
+
+/*-------------------------------------------------------------------
+ * turn a problem rule into a problem id by normalizing it
+ */
+static Id
+solver_ruletoproblem(Solver *solv, Id rid)
+{
+  if (rid >= solv->jobrules && rid < solv->jobrules_end)
+    rid = -(solv->ruletojob.elements[rid - solv->jobrules] + 1);
+  else if (rid >= solv->bestrules && rid < solv->bestrules_up && solv->bestrules_info[rid - solv->bestrules] < 0)
+    rid = -(solv->ruletojob.elements[-solv->bestrules_info[rid - solv->bestrules] - solv->jobrules] + 1);
+  else if (rid > solv->infarchrules && rid < solv->infarchrules_end)
+    {
+      Pool *pool = solv->pool;
+      Id name = pool->solvables[-solv->rules[rid].p].name;
+      while (rid > solv->infarchrules && pool->solvables[-solv->rules[rid - 1].p].name == name)
+        rid--;
+    }
+  else if (rid > solv->duprules && rid < solv->duprules_end)
+    {
+      Pool *pool = solv->pool;
+      Id name = pool->solvables[-solv->rules[rid].p].name;
+      while (rid > solv->duprules && pool->solvables[-solv->rules[rid - 1].p].name == name)
+        rid--;
+    }
+  return rid;
+}
+
+/*-------------------------------------------------------------------
+ * when the solver runs into a problem, it needs to disable all
+ * involved non-pkg rules and record the rules for solution
+ * generation.
+ */
+void
+solver_recordproblem(Solver *solv, Id rid)
+{
+  Id v = solver_ruletoproblem(solv, rid);
+  /* return if problem already countains our rule */
+  if (solv->problems.count)
+    {
+      int i;
+      for (i = solv->problems.count - 1; i >= 0; i--)
+        if (solv->problems.elements[i] == 0)    /* end of last problem reached? */
+          break;
+        else if (solv->problems.elements[i] == v)
+          return;
+    }
+  queue_push(&solv->problems, v);
+}
+
+/*-------------------------------------------------------------------
+ * this is called when a problem is solved by disabling a rule.
+ * It calls disableproblem and then re-enables policy rules
+ */
+void
+solver_fixproblem(Solver *solv, Id rid)
+{
+  Id v = solver_ruletoproblem(solv, rid);
+  solver_disableproblem(solv, v);
+  if (v < 0)
+    solver_reenablepolicyrules(solv, -v);
+}
+
+/*-------------------------------------------------------------------
+ * disable a set of problems
+ */
+void
+solver_disableproblemset(Solver *solv, int start)
+{
+  int i;
+  for (i = start + 1; i < solv->problems.count - 1; i++)
+    solver_disableproblem(solv, solv->problems.elements[i]);
+}
+
+/*-------------------------------------------------------------------
+ * try to fix a problem by auto-uninstalling packages
+ */
+Id
+solver_autouninstall(Solver *solv, int start)
+{
+  Pool *pool = solv->pool;
+  int i;
+  int lastfeature = 0, lastupdate = 0;
+  Id v;
+  Id extraflags = -1;
+  Map *m = 0;
+
+  if (!solv->allowuninstall && !solv->allowuninstall_all)
+    {
+      if (!solv->allowuninstallmap.size)
+	return 0;		/* why did we get called? */
+      m = &solv->allowuninstallmap;
+    }
+  for (i = start + 1; i < solv->problems.count - 1; i++)
+    {
+      v = solv->problems.elements[i];
+      if (v < 0)
+	extraflags &= solv->job.elements[-v - 1];
+      if (v >= solv->updaterules && v < solv->updaterules_end)
+	{
+	  Rule *r;
+	  Id p = solv->installed->start + (v - solv->updaterules);
+	  if (m && !MAPTST(m, v - solv->updaterules))
+	    continue;
+	  if (pool->considered && !MAPTST(pool->considered, p))
+	    continue;	/* do not uninstalled disabled packages */
+	  if (solv->bestrules_info && solv->bestrules_end > solv->bestrules)
+	    {
+	      int j;
+	      for (j = start + 1; j < solv->problems.count - 1; j++)
+		{
+		  Id vv = solv->problems.elements[j];
+		  if (vv >= solv->bestrules && vv < solv->bestrules_end && solv->bestrules_info[vv - solv->bestrules] == p)
+		    break;
+		}
+	      if (j < solv->problems.count - 1)
+		continue;	/* best rule involved, do not uninstall */
+	    }
+	  /* check if identical to feature rule, we don't like that (except for orphans) */
+	  r = solv->rules + solv->featurerules + (v - solv->updaterules);
+	  if (!r->p)
+	    {
+	      /* update rule == feature rule */
+	      if (v > lastfeature)
+		lastfeature = v;
+	      /* prefer orphaned packages in dup mode */
+	      if (solv->keep_orphans)
+		{
+		  r = solv->rules + v;
+		  if (!r->d && !r->w2 && r->p == p)
+		    {
+		      lastfeature = v;
+		      lastupdate = 0;
+		      break;
+		    }
+		}
+	      continue;
+	    }
+	  if (v > lastupdate)
+	    lastupdate = v;
+	}
+    }
+  if (!lastupdate && !lastfeature)
+    return 0;
+  v = lastupdate ? lastupdate : lastfeature;
+  POOL_DEBUG(SOLV_DEBUG_UNSOLVABLE, "allowuninstall disabling ");
+  solver_printruleclass(solv, SOLV_DEBUG_UNSOLVABLE, solv->rules + v);
+  /* should really be solver_fixproblem, but we know v is an update/feature rule */
+  solver_disableproblem(solv, v);
+  if (extraflags != -1 && (extraflags & SOLVER_CLEANDEPS) != 0 && solv->cleandepsmap.size)
+    {
+      /* add the package to the updatepkgs list, this will automatically turn
+       * on cleandeps mode */
+      Id p = solv->rules[v].p;
+      if (!solv->cleandeps_updatepkgs)
+	{
+	  solv->cleandeps_updatepkgs = solv_calloc(1, sizeof(Queue));
+	  queue_init(solv->cleandeps_updatepkgs);
+	}
+      if (p > 0)
+	{
+	  int oldupdatepkgscnt = solv->cleandeps_updatepkgs->count;
+          queue_pushunique(solv->cleandeps_updatepkgs, p);
+	  if (solv->cleandeps_updatepkgs->count != oldupdatepkgscnt)
+	    solver_disablepolicyrules(solv);
+	}
+    }
+  return v;
 }
 
 
@@ -202,7 +380,6 @@ refine_suggestion(Solver *solv, Id *problem, Id sug, Queue *refined, int essenti
   queue_empty(refined);
   if (!essentialok && sug < 0 && (solv->job.elements[-sug - 1] & SOLVER_ESSENTIAL) != 0)
     return;
-  queue_init(&disabled);
   queue_push(refined, sug);
 
   /* re-enable all problem rules with the exception of "sug"(gestion) */
@@ -211,10 +388,14 @@ refine_suggestion(Solver *solv, Id *problem, Id sug, Queue *refined, int essenti
   for (i = 0; problem[i]; i++)
     if (problem[i] != sug)
       solver_enableproblem(solv, problem[i]);
-
   if (sug < 0)
     solver_reenablepolicyrules(solv, -sug);
-  else if (sug >= solv->updaterules && sug < solv->updaterules_end)
+
+  /* here is where the feature rules come into play: if we disabled an
+   * update rule, we enable the corresponding feature rule if there is
+   * one. We do this to make the solver downgrade packages instead of
+   * deinstalling them */
+  if (sug >= solv->updaterules && sug < solv->updaterules_end)
     {
       /* enable feature rule */
       Rule *r = solv->rules + solv->featurerules + (sug - solv->updaterules);
@@ -224,11 +405,15 @@ refine_suggestion(Solver *solv, Id *problem, Id sug, Queue *refined, int essenti
 
   enableweakrules(solv);
 
+  /* disabled contains all of the rules we disabled in the refinement process */
+  queue_init(&disabled);
   for (;;)
     {
-      int njob, nfeature, nupdate, pass;
+      int nother, nfeature, nupdate, pass;
       queue_empty(&solv->problems);
       solver_reset(solv);
+      /* we set disablerules to zero because we are only interested in
+       * the first problem and we don't want the solver to disable the problems */
       solver_run_sat(solv, 0, 0);
 
       if (!solv->problems.count)
@@ -237,16 +422,18 @@ refine_suggestion(Solver *solv, Id *problem, Id sug, Queue *refined, int essenti
 	  break;		/* great, no more problems */
 	}
       disabledcnt = disabled.count;
-      /* start with 1 to skip over proof index */
-      njob = nfeature = nupdate = 0;
+      nother = nfeature = nupdate = 0;
       for (pass = 0; pass < 2; pass++)
 	{
+	  /* start with 1 to skip over proof index */
 	  for (i = 1; i < solv->problems.count - 1; i++)
 	    {
 	      /* ignore solutions in refined */
 	      v = solv->problems.elements[i];
 	      if (v == 0)
 		break;	/* end of problem reached */
+	      if (!essentialok && v < 0 && (solv->job.elements[-v - 1] & SOLVER_ESSENTIAL) != 0)
+		continue;	/* not that one! */
 	      if (sug != v)
 		{
 		  /* check if v is in the given problems list
@@ -260,14 +447,10 @@ refine_suggestion(Solver *solv, Id *problem, Id sug, Queue *refined, int essenti
 		}
 	      if (v >= solv->featurerules && v < solv->featurerules_end)
 		nfeature++;
-	      else if (v > 0)
+	      else if (v > solv->updaterules && v < solv->updaterules_end)
 		nupdate++;
 	      else
-		{
-		  if (!essentialok && (solv->job.elements[-v - 1] & SOLVER_ESSENTIAL) != 0)
-		    continue;	/* not that one! */
-		  njob++;
-		}
+	        nother++;
 	      queue_push(&disabled, v);
 	    }
 	  if (disabled.count != disabledcnt)
@@ -280,7 +463,7 @@ refine_suggestion(Solver *solv, Id *problem, Id sug, Queue *refined, int essenti
 	  refined->count = 0;
 	  break;
 	}
-      if (!njob && nupdate && nfeature)
+      if (!nother && nupdate && nfeature)
 	{
 	  /* got only update rules, filter out feature rules */
 	  POOL_DEBUG(SOLV_DEBUG_SOLUTIONS, "throwing away feature rules\n");
@@ -300,14 +483,14 @@ refine_suggestion(Solver *solv, Id *problem, Id sug, Queue *refined, int essenti
 	  if (!nfeature && v != sug)
 	    queue_push(refined, v);	/* do not record feature rules */
 	  solver_disableproblem(solv, v);
+	  if (v < 0)
+	    solver_reenablepolicyrules(solv, -v);
 	  if (v >= solv->updaterules && v < solv->updaterules_end)
 	    {
 	      Rule *r = solv->rules + (v - solv->updaterules + solv->featurerules);
 	      if (r->p)
 		solver_enablerule(solv, r);	/* enable corresponding feature rule */
 	    }
-	  if (v < 0)
-	    solver_reenablepolicyrules(solv, -v);
 	}
       else
 	{
@@ -339,6 +522,7 @@ refine_suggestion(Solver *solv, Id *problem, Id sug, Queue *refined, int essenti
   for (i = 0; i < disabled.count; i++)
     solver_enableproblem(solv, disabled.elements[i]);
   queue_free(&disabled);
+
   /* reset policy rules */
   for (i = 0; problem[i]; i++)
     solver_enableproblem(solv, problem[i]);
@@ -454,13 +638,6 @@ convertsolution(Solver *solv, Id why, Queue *solutionq)
 	  return;	/* false alarm */
 
       p = solv->installed->start + (why - solv->updaterules);
-      if (solv->dupmap_all && solv->rules[why].p != p && solv->decisionmap[p] > 0)
-	{
-	  /* distupgrade case, allow to keep old package */
-	  queue_push(solutionq, SOLVER_SOLUTION_DISTUPGRADE);
-	  queue_push(solutionq, p);
-	  return;
-	}
       if (solv->decisionmap[p] > 0)
 	return;		/* false alarm, turned out we can keep the package */
       rr = solv->rules + solv->featurerules + (why - solv->updaterules);
@@ -501,7 +678,7 @@ convertsolution(Solver *solv, Id why, Queue *solutionq)
 	if (p > 0 && solv->decisionmap[p] > 0)
 	  return;	/* false alarm */
       /* check update/feature rule */
-      p = solv->bestrules_pkg[why - solv->bestrules];
+      p = solv->bestrules_info[why - solv->bestrules];
       if (p < 0)
 	{
 	  /* install job */
@@ -541,6 +718,12 @@ convertsolution(Solver *solv, Id why, Queue *solutionq)
 	  queue_push(solutionq, rp);
 	}
       return;
+    }
+  if (why >= solv->blackrules && why < solv->blackrules_end)
+    {
+      queue_push(solutionq, SOLVER_SOLUTION_BLACK);
+      assert(solv->rules[why].p < 0);
+      queue_push(solutionq, -solv->rules[why].p);
     }
 }
 
@@ -611,7 +794,7 @@ create_solutions(Solver *solv, int probnr, int solidx)
   memset(&solv->problems, 0, sizeof(solv->problems));
 
   /* save branches queue */
-  branches_save = solv->problems;
+  branches_save = solv->branches;
   memset(&solv->branches, 0, sizeof(solv->branches));
 
   /* save decisionq_reason */
@@ -803,6 +986,8 @@ solver_solutionelement_extrajobflags(Solver *solv, Id problem, Id solution)
  *    SOLVER_SOLUTION_DISTUPGRADE   pkgid
  *    -> add (SOLVER_INSTALL|SOLVER_SOLVABLE, rp) to the job
  *    SOLVER_SOLUTION_BEST          pkgid
+ *    -> add (SOLVER_INSTALL|SOLVER_SOLVABLE, rp) to the job
+ *    SOLVER_SOLUTION_BLACK         pkgid
  *    -> add (SOLVER_INSTALL|SOLVER_SOLVABLE, rp) to the job
  *    SOLVER_SOLUTION_JOB           jobidx
  *    -> remove job (jobidx - 1, jobidx) from job queue
@@ -1119,7 +1304,7 @@ solver_problemruleinfo2str(Solver *solv, SolverRuleinfo type, Id source, Id targ
       if (pool_disabled_solvable(pool, ss))
         return pool_tmpjoin(pool, "package ", pool_solvid2str(pool, source), " is disabled");
       if (ss->arch && ss->arch != ARCH_SRC && ss->arch != ARCH_NOSRC &&
-          pool->id2arch && (ss->arch > pool->lastarch || !pool->id2arch[ss->arch]))
+          pool->id2arch && pool_arch2score(pool, ss->arch) == 0)
         return pool_tmpjoin(pool, "package ", pool_solvid2str(pool, source), " does not have a compatible architecture");
       return pool_tmpjoin(pool, "package ", pool_solvid2str(pool, source), " is not installable");
     case SOLVER_RULE_PKG_NOTHING_PROVIDES_DEP:
@@ -1154,6 +1339,12 @@ solver_problemruleinfo2str(Solver *solv, SolverRuleinfo type, Id source, Id targ
       s = pool_tmpjoin(pool, "both package ", pool_solvid2str(pool, source), " and ");
       s = pool_tmpjoin(pool, s, pool_solvid2str(pool, target), " obsolete ");
       return pool_tmpappend(pool, s, pool_dep2str(pool, dep), 0);
+    case SOLVER_RULE_BLACK:
+      return pool_tmpjoin(pool, "package ", pool_solvid2str(pool, source), " can only be installed by a direct request");
+    case SOLVER_RULE_PKG_CONSTRAINS:
+      s = pool_tmpjoin(pool, "package ", pool_solvid2str(pool, source), 0);
+      s = pool_tmpappend(pool, s, " has constraint ", pool_dep2str(pool, dep));
+      return pool_tmpappend(pool, s, " conflicting with ", pool_solvid2str(pool, target));
     default:
       return "bad problem rule type";
     }
@@ -1207,6 +1398,11 @@ solver_solutionelement2str(Solver *solv, Id p, Id rp)
         return pool_tmpjoin(pool, "keep old ", pool_solvable2str(pool, s), 0);
       else
         return pool_tmpjoin(pool, "install ", pool_solvable2str(pool, s), " despite the old version");
+    }
+  else if (p == SOLVER_SOLUTION_BLACK)
+    {
+      Solvable *s = pool->solvables + rp;
+      return pool_tmpjoin(pool, "install ", pool_solvable2str(pool, s), 0);
     }
   else if (p > 0 && rp == 0)
     return pool_tmpjoin(pool, "allow deinstallation of ", pool_solvid2str(pool, p), 0);

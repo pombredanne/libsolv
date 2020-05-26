@@ -260,6 +260,7 @@ proc repo_repomd_add_ext {selfName repodata what ext} {
 proc repo_repomd_add_exts {selfName} {
   upvar $selfName self
   set repodata [$self(handle) add_repodata 0]
+  $repodata extend_to_repo
   repo_repomd_add_ext self $repodata "filelists" "FL"
   $repodata internalize
 }
@@ -383,6 +384,7 @@ proc repo_susetags_add_ext {selfName repodata what ext} {
 proc repo_susetags_add_exts {selfName} {
   upvar $selfName self
   set repodata [$self(handle) add_repodata 0]
+  $repodata extend_to_repo
   repo_susetags_add_ext self $repodata "packages.FL" "FL"
   repo_susetags_add_ext self $repodata "packages.FL.gz" "FL"
   $repodata internalize
@@ -634,10 +636,10 @@ foreach arg $::argv {
     puts "nothing matches '$arg'"
     exit 1
   }
-  if {[$sel flags] & $solv::Selection_SELECTION_FILELIST} {
+  if {[$sel cget -flags] & $solv::Selection_SELECTION_FILELIST} {
     puts "\[using file list match for '$arg']"
   }
-  if {[$sel flags] & $solv::Selection_SELECTION_PROVIDES} {
+  if {[$sel cget -flags] & $solv::Selection_SELECTION_PROVIDES} {
     puts "\[using capability match for '$arg']"
   }
   lappend jobs {*}[$sel jobs $cmdactionmap($cmd)]

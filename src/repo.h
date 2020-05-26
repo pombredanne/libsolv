@@ -15,6 +15,7 @@
 
 #include "pooltypes.h"
 #include "pool.h"
+#include "poolarch.h"
 #include "repodata.h"
 #include "dataiterator.h"
 #include "hash.h"
@@ -23,7 +24,7 @@
 extern "C" {
 #endif
 
-typedef struct _Repo {
+typedef struct s_Repo {
   const char *name;		/* name pointer */
   Id repoid;			/* our id */
   void *appdata;		/* application private pointer */
@@ -98,13 +99,20 @@ static inline int pool_disabled_solvable(const Pool *pool, Solvable *s)
   return 0;
 }
 
+static inline int pool_badarch_solvable(const Pool *pool, Solvable *s)
+{
+  if (pool->id2arch && (!s->arch || pool_arch2score(pool, s->arch) == 0))
+    return 1;
+  return 0;
+}
+
 static inline int pool_installable(const Pool *pool, Solvable *s)
 {
-  if (!s->arch || s->arch == ARCH_SRC || s->arch == ARCH_NOSRC)
+  if (s->arch == ARCH_SRC || s->arch == ARCH_NOSRC)
     return 0;
   if (s->repo && s->repo->disabled)
     return 0;
-  if (pool->id2arch && (s->arch > pool->lastarch || !pool->id2arch[s->arch]))
+  if (pool->id2arch && (!s->arch || pool_arch2score(pool, s->arch) == 0))
     return 0;
   if (pool->considered)
     {
@@ -113,6 +121,34 @@ static inline int pool_installable(const Pool *pool, Solvable *s)
 	return 0;
     }
   return 1;
+}
+
+#ifdef LIBSOLV_INTERNAL
+static inline int pool_installable_whatprovides(const Pool *pool, Solvable *s)
+{
+  /* we always need the installed solvable in the whatprovides data,
+     otherwise obsoletes/conflicts on them won't work */
+  if (s->repo != pool->installed)
+    {
+      if (s->arch == ARCH_SRC || s->arch == ARCH_NOSRC || pool_badarch_solvable(pool, s))
+	return 0;
+      if (pool->considered && !pool->whatprovideswithdisabled)
+	{
+	  Id id = s - pool->solvables;
+	  if (!MAPTST(pool->considered, id))
+	    return 0;
+	}
+    }
+  return 1;
+}
+#endif
+
+/* not in solvable.h because we need the repo definition */
+static inline Solvable *solvable_free(Solvable *s, int reuseids)
+{
+  if (s && s->repo)
+    repo_free_solvable(s->repo, s - s->repo->pool->solvables, reuseids);
+  return 0;
 }
 
 /* search callback values */
@@ -136,6 +172,11 @@ Repodata *repo_last_repodata(Repo *repo);
 
 void repo_search(Repo *repo, Id p, Id key, const char *match, int flags, int (*callback)(void *cbdata, Solvable *s, Repodata *data, Repokey *key, KeyValue *kv), void *cbdata);
 
+/* returns the last repodata that contains the key */
+Repodata *repo_lookup_repodata(Repo *repo, Id entry, Id keyname);
+Repodata *repo_lookup_repodata_opt(Repo *repo, Id entry, Id keyname);
+Repodata *repo_lookup_filelist_repodata(Repo *repo, Id entry, Datamatcher *matcher);
+
 /* returns the string value of the attribute, or NULL if not found */
 Id repo_lookup_type(Repo *repo, Id entry, Id keyname);
 const char *repo_lookup_str(Repo *repo, Id entry, Id keyname);
@@ -148,6 +189,7 @@ int repo_lookup_void(Repo *repo, Id entry, Id keyname);
 const char *repo_lookup_checksum(Repo *repo, Id entry, Id keyname, Id *typep);
 const unsigned char *repo_lookup_bin_checksum(Repo *repo, Id entry, Id keyname, Id *typep);
 const void *repo_lookup_binary(Repo *repo, Id entry, Id keyname, int *lenp);
+unsigned int repo_lookup_count(Repo *repo, Id entry, Id keyname);	/* internal */
 Id solv_depmarker(Id keyname, Id marker);
 
 void repo_set_id(Repo *repo, Id p, Id keyname, Id id);
@@ -163,6 +205,8 @@ void repo_unset(Repo *repo, Id p, Id keyname);
 
 void repo_internalize(Repo *repo);
 void repo_disable_paging(Repo *repo);
+Id *repo_create_keyskip(Repo *repo, Id entry, Id **oldkeyskip);
+
 
 /* iterator macros */
 #define FOR_REPO_SOLVABLES(r, p, s)						\

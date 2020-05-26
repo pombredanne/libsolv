@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
+#include <getopt.h>
 
 #include "pool.h"
 #include "repo_solv.h"
@@ -60,7 +61,6 @@ main(int argc, char **argv)
 {
   Pool *pool;
   Repo *repo;
-  const char *basefile = 0;
   int with_attr = 0;
 #ifdef SUSE
   int add_auto = 0;
@@ -70,7 +70,7 @@ main(int argc, char **argv)
   pool = pool_create();
   repo = repo_create(pool, "<mergesolv>");
   
-  while ((c = getopt(argc, argv, "ahb:X")) >= 0)
+  while ((c = getopt(argc, argv, "ahX")) >= 0)
     {
       switch (c)
       {
@@ -79,9 +79,6 @@ main(int argc, char **argv)
 	  break;
 	case 'a':
 	  with_attr = 1;
-	  break;
-	case 'b':
-	  basefile = optarg;
 	  break;
 	case 'X':
 #ifdef SUSE
@@ -115,7 +112,7 @@ main(int argc, char **argv)
   if (add_auto)
     repo_add_autopattern(repo, 0);
 #endif
-  tool_write(repo, basefile, 0);
+  tool_write(repo, stdout);
   pool_free(pool);
   return 0;
 }

@@ -51,39 +51,58 @@ pool_strn2id(Pool *pool, const char *str, unsigned int len, int create)
   return id;
 }
 
+void
+pool_resize_rels_hash(Pool *pool, int numnew)
+{
+  Hashval h, hh, hashmask;
+  Hashtable hashtbl;
+  int i;
+  Reldep *rd;
+
+  if (numnew <= 0)
+    return;
+  hashmask = mkmask(pool->nrels + numnew);
+  if (hashmask <= pool->relhashmask)
+    return;    /* same as before */
+
+  /* realloc hash table */
+  pool->relhashmask = hashmask;
+  solv_free(pool->relhashtbl);
+  pool->relhashtbl = hashtbl = solv_calloc(hashmask + 1, sizeof(Id));
+
+  /* rehash all rels into new hashtable */
+  for (i = 1, rd = pool->rels + i; i < pool->nrels; i++, rd++)
+    {
+      h = relhash(rd->name, rd->evr, rd->flags) & hashmask;
+      hh = HASHCHAIN_START;
+      while (hashtbl[h])
+	h = HASHCHAIN_NEXT(h, hh, hashmask);
+      hashtbl[h] = i;
+    }
+}
+
 Id
 pool_rel2id(Pool *pool, Id name, Id evr, int flags, int create)
 {
   Hashval h, hh, hashmask;
-  int i;
   Id id;
   Hashtable hashtbl;
   Reldep *ran;
 
-  hashmask = pool->relhashmask;
-  hashtbl = pool->relhashtbl;
-  ran = pool->rels;
 
   /* extend hashtable if needed */
+  hashmask = pool->relhashmask;
   if ((Hashval)pool->nrels * 2 > hashmask)
     {
-      solv_free(pool->relhashtbl);
-      pool->relhashmask = hashmask = mkmask(pool->nrels + REL_BLOCK);
-      pool->relhashtbl = hashtbl = solv_calloc(hashmask + 1, sizeof(Id));
-      /* rehash all rels into new hashtable */
-      for (i = 1; i < pool->nrels; i++)
-	{
-	  h = relhash(ran[i].name, ran[i].evr, ran[i].flags) & hashmask;
-	  hh = HASHCHAIN_START;
-	  while (hashtbl[h])
-	    h = HASHCHAIN_NEXT(h, hh, hashmask);
-	  hashtbl[h] = i;
-	}
+      pool_resize_rels_hash(pool, REL_BLOCK);
+      hashmask = pool->relhashmask;
     }
+  hashtbl = pool->relhashtbl;
 
   /* compute hash and check for match */
   h = relhash(name, evr, flags) & hashmask;
   hh = HASHCHAIN_START;
+  ran = pool->rels;
   while ((id = hashtbl[h]) != 0)
     {
       if (ran[id].name == name && ran[id].evr == evr && ran[id].flags == flags)
@@ -149,6 +168,7 @@ pool_id2rel(const Pool *pool, Id id)
   if (!ISRELDEP(id))
     return "";
   rd = GETRELDEP(pool, id);
+
   switch (rd->flags)
     {
     /* debian special cases < and > */
@@ -178,6 +198,8 @@ pool_id2rel(const Pool *pool, Id id)
       return pool->disttype == DISTTYPE_RPM ? " or " : " | ";
     case REL_WITH:
       return pool->disttype == DISTTYPE_RPM ? " with " : " + ";
+    case REL_WITHOUT:
+      return pool->disttype == DISTTYPE_RPM ? " without " : " - ";
     case REL_NAMESPACE:
       return " NAMESPACE ";	/* actually not used in dep2str */
     case REL_ARCH:
@@ -188,12 +210,18 @@ pool_id2rel(const Pool *pool, Id id)
       return " FILECONFLICT ";
     case REL_COND:
       return pool->disttype == DISTTYPE_RPM ? " if " : " IF ";
+    case REL_UNLESS:
+      return pool->disttype == DISTTYPE_RPM ? " unless " : " UNLESS ";
     case REL_COMPAT:
       return " compat >= ";
     case REL_KIND:
       return " KIND ";
     case REL_ELSE:
       return pool->disttype == DISTTYPE_RPM ? " else " : " ELSE ";
+    case REL_CONDA:
+      return " ";
+    case REL_ERROR:
+      return " ERROR ";
     default:
       break;
     }
@@ -236,9 +264,9 @@ dep2strcpy(const Pool *pool, char *p, Id id, int oldrel)
     {
       Reldep *rd = GETRELDEP(pool, id);
       int rel = rd->flags;
-      if (oldrel == REL_AND || oldrel == REL_OR || oldrel == REL_WITH || oldrel == REL_COND || oldrel == REL_ELSE || oldrel == -1)
-	if (rel == REL_AND || rel == REL_OR || rel == REL_WITH || rel == REL_COND || rel == REL_ELSE)
-	  if ((oldrel != rel || rel == REL_COND || rel == REL_ELSE) && !(oldrel == REL_COND && rel == REL_ELSE))
+      if (oldrel == REL_AND || oldrel == REL_OR || oldrel == REL_WITH || oldrel == REL_WITHOUT || oldrel == REL_COND || oldrel == REL_UNLESS || oldrel == REL_ELSE || oldrel == -1)
+	if (rel == REL_AND || rel == REL_OR || rel == REL_WITH || rel == REL_WITHOUT || rel == REL_COND || rel == REL_UNLESS || rel == REL_ELSE)
+	  if ((oldrel != rel || rel == REL_COND || rel == REL_UNLESS || rel == REL_ELSE) && !((oldrel == REL_COND || oldrel == REL_UNLESS) && rel == REL_ELSE))
 	    {
 	      *p++ = '(';
 	      dep2strcpy(pool, p, rd->name, rd->flags);
@@ -291,15 +319,28 @@ pool_dep2str(Pool *pool, Id id)
   return p;
 }
 
+static void
+pool_free_rels_hash(Pool *pool)
+{
+  pool->relhashtbl = solv_free(pool->relhashtbl);
+  pool->relhashmask = 0;
+}
+
 void
 pool_shrink_strings(Pool *pool)
 {
+  /* free excessive big hashes */
+  if (pool->ss.stringhashmask && pool->ss.stringhashmask > mkmask(pool->ss.nstrings + 8192))
+    stringpool_freehash(&pool->ss);
   stringpool_shrink(&pool->ss);
 }
 
 void
 pool_shrink_rels(Pool *pool)
 {
+  /* free excessive big hashes */
+  if (pool->relhashmask && pool->relhashmask > mkmask(pool->nrels + 4096))
+    pool_free_rels_hash(pool);
   pool->rels = solv_extend_resize(pool->rels, pool->nrels, sizeof(Reldep), REL_BLOCK);
 }
 
@@ -308,8 +349,7 @@ void
 pool_freeidhashes(Pool *pool)
 {
   stringpool_freehash(&pool->ss);
-  pool->relhashtbl = solv_free(pool->relhashtbl);
-  pool->relhashmask = 0;
+  pool_free_rels_hash(pool);
 }
 
 /* EOF */

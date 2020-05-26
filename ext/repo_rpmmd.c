@@ -603,17 +603,18 @@ static void
 fill_cshash_from_new_solvables(struct parsedata *pd)
 {
   Pool *pool = pd->pool;
-  Id cstype = 0;
-  unsigned const char *cs;
-  int i;
+  int i, l;
+  KeyValue kv;
+  Repokey *key;
 
   for (i = pd->first; i < pool->nsolvables; i++)
     {
       if (pool->solvables[i].repo != pd->repo)
 	continue;
-      cs = repodata_lookup_bin_checksum_uninternalized(pd->data, i, SOLVABLE_CHECKSUM, &cstype);
-      if (cs)
-	put_in_cshash(pd, cs, solv_chksum_len(cstype), i);
+      if ((key = repodata_lookup_kv_uninternalized(pd->data, i, SOLVABLE_CHECKSUM, &kv)) == 0)
+	continue;
+      if ((l = solv_chksum_len(key->type)) != 0)
+	put_in_cshash(pd, (const unsigned char *)kv.str, l, i);
     }
 }
 
@@ -1090,13 +1091,6 @@ endElement(struct solv_xmlparser *xmlp, int state, char *content)
     }
 }
 
-static void
-errorCallback(struct solv_xmlparser *xmlp, const char *errstr, unsigned int line, unsigned int column)
-{
-  struct parsedata *pd = xmlp->userdata;
-  pd->ret = pool_error(pd->pool, -1, "repo_rpmmd: %s at line %u:%u", errstr, line, column);
-}
-
 
 /*-----------------------------------------------*/
 
@@ -1134,8 +1128,9 @@ repo_add_rpmmd(Repo *repo, FILE *fp, const char *language, int flags)
       fill_cshash_from_repo(&pd);
     }
 
-  solv_xmlparser_init(&pd.xmlp, stateswitches, &pd, startElement, endElement, errorCallback);
-  solv_xmlparser_parse(&pd.xmlp, fp);
+  solv_xmlparser_init(&pd.xmlp, stateswitches, &pd, startElement, endElement);
+  if (solv_xmlparser_parse(&pd.xmlp, fp) != SOLV_XMLPARSER_OK)
+    pd.ret = pool_error(pool, -1, "repo_rpmmd: %s at line %u:%u", pd.xmlp.errstr, pd.xmlp.line, pd.xmlp.column);
   solv_xmlparser_free(&pd.xmlp);
 
   solv_free(pd.lastdirstr);
@@ -1143,6 +1138,22 @@ repo_add_rpmmd(Repo *repo, FILE *fp, const char *language, int flags)
   free_cshash(&pd);
   repodata_free_dircache(data);
   queue_free(&pd.diskusageq);
+
+  if ((flags & REPO_EXTEND_SOLVABLES) != 0)
+    {
+      /* is this a filelist extension? */
+      if (repodata_has_keyname(data, SOLVABLE_FILELIST))
+	repodata_set_filelisttype(data, REPODATA_FILELIST_EXTENSION);
+    }
+  else
+    {
+      /* is this a primary with a filtered filelist? */
+      if (data->end > data->start)
+	{
+	  repodata_set_filelisttype(data, REPODATA_FILELIST_FILTERED);
+	  repodata_set_void(data, SOLVID_META, REPOSITORY_FILTEREDFILELIST);
+	}
+    }
 
   if (!(flags & REPO_NO_INTERNALIZE))
     repodata_internalize(data);

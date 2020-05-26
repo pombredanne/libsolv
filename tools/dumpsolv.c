@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
+#include <getopt.h>
 
 static int with_attr;
 static int dump_json;
@@ -54,7 +55,6 @@ dump_attr(Repo *repo, Repodata *data, Repokey *key, KeyValue *kv)
     case REPOKEY_TYPE_VOID:
       printf("%s: (void)\n", keyname);
       break;
-    case REPOKEY_TYPE_U32:
     case REPOKEY_TYPE_CONSTANT:
       printf("%s: %u\n", keyname, kv->num);
       break;
@@ -225,7 +225,6 @@ dump_attr_json(Repo *repo, Repodata *data, Repokey *key, KeyValue *kv, struct cb
     case REPOKEY_TYPE_VOID:
       printf("null");
       break;
-    case REPOKEY_TYPE_U32:
     case REPOKEY_TYPE_CONSTANT:
       printf("%u", kv->num);
       break;

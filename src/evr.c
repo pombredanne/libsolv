@@ -17,6 +17,9 @@
 #include "evr.h"
 #include "pool.h"
 
+#ifdef ENABLE_CONDA
+#include "conda.h"
+#endif
 
 
 #if defined(DEBIAN) || defined(MULTI_SEMANTICS)
@@ -77,10 +80,10 @@ solv_vercmp_rpm(const char *s1, const char *q1, const char *s2, const char *q2)
   for (;;)
     {
       while (s1 < q1 && !(*s1 >= '0' && *s1 <= '9') &&
-          !(*s1 >= 'a' && *s1 <= 'z') && !(*s1 >= 'A' && *s1 <= 'Z') && *s1 != '~')
+          !(*s1 >= 'a' && *s1 <= 'z') && !(*s1 >= 'A' && *s1 <= 'Z') && *s1 != '~' && *s1 != '^')
 	s1++;
       while (s2 < q2 && !(*s2 >= '0' && *s2 <= '9') &&
-          !(*s2 >= 'a' && *s2 <= 'z') && !(*s2 >= 'A' && *s2 <= 'Z') && *s2 != '~')
+          !(*s2 >= 'a' && *s2 <= 'z') && !(*s2 >= 'A' && *s2 <= 'Z') && *s2 != '~' && *s2 != '^')
 	s2++;
       if (s1 < q1 && *s1 == '~')
         {
@@ -94,6 +97,18 @@ solv_vercmp_rpm(const char *s1, const char *q1, const char *s2, const char *q2)
         }
       if (s2 < q2 && *s2 == '~')
 	return 1;
+      if (s1 < q1 && *s1 == '^')
+	{
+	  if (s2 < q2 && *s2 == '^')
+	    {
+	      s1++;
+	      s2++;
+	      continue;
+	    }
+	  return s2 < q2 ? -1 : 1;
+	}
+      if (s2 < q2 && *s2 == '^')
+	return s1 < q1 ? 1 : -1;
       if (s1 >= q1 || s2 >= q2)
 	break;
       if ((*s1 >= '0' && *s1 <= '9') || (*s2 >= '0' && *s2 <= '9'))
@@ -310,7 +325,7 @@ solv_vercmp(const char *s1, const char *q1, const char *s2, const char *q2)
 
 #if defined(MULTI_SEMANTICS)
 # define solv_vercmp (*(pool->disttype == DISTTYPE_DEB ? &solv_vercmp_deb : \
-                        pool->disttype == DISTTYPE_HAIKU ? solv_vercmp_haiku : \
+                        pool->disttype == DISTTYPE_HAIKU ? &solv_vercmp_haiku : \
                         &solv_ver##cmp_rpm))
 #elif defined(DEBIAN)
 # define solv_vercmp solv_vercmp_deb
@@ -332,6 +347,11 @@ pool_evrcmp_str(const Pool *pool, const char *evr1, const char *evr2, int mode)
 
   if (evr1 == evr2)
     return 0;
+
+#ifdef ENABLE_CONDA
+  if (pool->disttype == DISTTYPE_CONDA)
+    return pool_evrcmp_conda(pool, evr1, evr2, mode);
+#endif
 
 #if 0
   POOL_DEBUG(DEBUG_EVRCMP, "evrcmp %s %s mode=%d\n", evr1, evr2, mode);

@@ -213,6 +213,8 @@ repo_free_solvable_block(Repo *repo, Id start, int count, int reuseids)
 	      int j;
 	      for (j = dstart; j < dend; j++)	
 		data->attrs[j - data->start] = solv_free(data->attrs[j - data->start]);
+	      if (data->lasthandle >= dstart && data->lasthandle < dend)
+	        data->lasthandle = 0;
 	    }
 	  if (data->incoreoffset)
 	    memset(data->incoreoffset + (dstart - data->start), 0, (dend - dstart) * sizeof(Id));
@@ -391,7 +393,7 @@ repo_addid_dep_hash(Repo *repo, Offset olddeps, Id id, Id marker, int size)
   if (repo->lastidhash_idarraysize != repo->idarraysize || (Hashval)size * 2 > repo->lastidhash_mask || repo->lastmarker != marker)
     {
       repo->lastmarkerpos = 0;
-      if (size * 2 > (Hashval)repo->lastidhash_mask)
+      if ((Hashval)size * 2 > repo->lastidhash_mask)
 	{
 	  repo->lastidhash_mask = mkmask(size < REPO_ADDID_DEP_HASHMIN ? REPO_ADDID_DEP_HASHMIN : size);
 	  repo->lastidhash = solv_realloc2(repo->lastidhash, repo->lastidhash_mask + 1, sizeof(Id));
@@ -672,11 +674,12 @@ struct matchdata
   int flags;
   Datamatcher matcher;
   int stop;
+  Id *keyskip;
   int (*callback)(void *cbdata, Solvable *s, Repodata *data, Repokey *key, KeyValue *kv);
   void *callback_data;
 };
 
-int
+static int
 repo_matchvalue(void *cbdata, Solvable *s, Repodata *data, Repokey *key, KeyValue *kv)
 {
   struct matchdata *md = cbdata;
@@ -691,6 +694,12 @@ repo_matchvalue(void *cbdata, Solvable *s, Repodata *data, Repokey *key, KeyValu
 	return 0;
       if (!datamatcher_match(&md->matcher, str))
 	return 0;
+    }
+  else
+    {
+      /* stringify filelist if requested */
+      if (key->name == SOLVABLE_FILELIST && key->type == REPOKEY_TYPE_DIRSTRARRAY && (md->matcher.flags & SEARCH_FILES) != 0)
+        repodata_stringify(md->pool, data, key, kv, md->flags);
     }
   md->stop = md->callback(md->callback_data, s, data, key, kv);
   return md->stop;
@@ -730,14 +739,41 @@ domatch_idarray(Solvable *s, Id keyname, struct matchdata *md, Id *ida)
     }
 }
 
+static Offset *
+solvable_offsetptr(Solvable *s, Id keyname)
+{
+  switch(keyname)
+  {
+  case SOLVABLE_PROVIDES:
+    return &s->provides;
+  case SOLVABLE_OBSOLETES:
+    return &s->obsoletes;
+  case SOLVABLE_CONFLICTS:
+    return &s->conflicts;
+  case SOLVABLE_REQUIRES:
+    return &s->requires;
+  case SOLVABLE_RECOMMENDS:
+    return &s->recommends;
+  case SOLVABLE_SUGGESTS:
+    return &s->suggests;
+  case SOLVABLE_SUPPLEMENTS:
+    return &s->supplements;
+  case SOLVABLE_ENHANCES:
+    return &s->enhances;
+  default:
+    return 0;
+  }
+}
+
 static void
 repo_search_md(Repo *repo, Id p, Id keyname, struct matchdata *md)
 {
   KeyValue kv;
   Pool *pool = repo->pool;
   Repodata *data;
-  int i, j, flags;
+  int i, flags;
   Solvable *s;
+  Id *keyskip;
 
   kv.parent = 0;
   md->stop = 0;
@@ -752,12 +788,10 @@ repo_search_md(Repo *repo, Id p, Id keyname, struct matchdata *md)
 	}
       return;
     }
-  else if (p < 0)
-    /* The callback only supports solvables, so we can't iterate over the
-       extra things.  */
-    return;
+  if (p < 0 && p != SOLVID_META)
+    return;		/* SOLVID_POS not supported yet */
   flags = md->flags;
-  if (!(flags & SEARCH_NO_STORAGE_SOLVABLE))
+  if (p > 0 && !(flags & SEARCH_NO_STORAGE_SOLVABLE))
     {
       s = pool->solvables + p;
       switch(keyname)
@@ -838,7 +872,7 @@ repo_search_md(Repo *repo, Id p, Id keyname, struct matchdata *md)
 	  case RPM_RPMDBID:
 	    if (repo->rpmdbid)
 	      {
-		kv.num = repo->rpmdbid[p - repo->start];
+		kv.num = (unsigned int)repo->rpmdbid[p - repo->start];
 		kv.num2 = 0;
 		repo_matchvalue(md, s, 0, repo_solvablekeys + (RPM_RPMDBID - SOLVABLE_NAME), &kv);
 	      }
@@ -850,42 +884,23 @@ repo_search_md(Repo *repo, Id p, Id keyname, struct matchdata *md)
 	}
     }
 
+  if (keyname)
+    {
+      if (keyname == SOLVABLE_FILELIST)
+	data = repo_lookup_filelist_repodata(repo, p, &md->matcher);
+      else
+        data = repo_lookup_repodata_opt(repo, p, keyname);
+      if (data)
+        repodata_search(data, p, keyname, md->flags, repo_matchvalue, md);
+      return;
+    }
+
+  keyskip = repo_create_keyskip(repo, p, &md->keyskip);
   FOR_REPODATAS(repo, i, data)
     {
-      if (p < data->start || p >= data->end)
+      if (p != SOLVID_META && (p < data->start || p >= data->end))
 	continue;
-      if (keyname && !repodata_precheck_keyname(data, keyname))
-	continue;
-      if (keyname == SOLVABLE_FILELIST && !(md->flags & SEARCH_COMPLETE_FILELIST))
-	{
-	  /* do not search filelist extensions */
-	  if (data->state != REPODATA_AVAILABLE)
-	    continue;
-	  for (j = 1; j < data->nkeys; j++)
-	    if (data->keys[j].name != REPOSITORY_SOLVABLES && data->keys[j].name != SOLVABLE_FILELIST)
-	      break;
-	  if (j == data->nkeys)
-	    continue;
-	}
-      if (data->state == REPODATA_STUB)
-	{
-	  if (keyname)
-	    {
-	      for (j = 1; j < data->nkeys; j++)
-		if (keyname == data->keys[j].name)
-		  break;
-	      if (j == data->nkeys)
-		continue;
-	    }
-	  /* load it */
-	  if (data->loadcallback)
-	    data->loadcallback(data);
-	  else
-            data->state = REPODATA_ERROR;
-	}
-      if (data->state == REPODATA_ERROR)
-	continue;
-      repodata_search(data, p, keyname, md->flags, repo_matchvalue, md);
+      repodata_search_keyskip(data, p, keyname, md->flags, keyskip, repo_matchvalue, md);
       if (md->stop > SEARCH_NEXT_KEY)
 	break;
     }
@@ -908,18 +923,181 @@ repo_search(Repo *repo, Id p, Id keyname, const char *match, int flags, int (*ca
   repo_search_md(repo, p, keyname, &md);
   if (match)
     datamatcher_free(&md.matcher);
+  solv_free(md.keyskip);
+}
+
+Repodata *
+repo_lookup_repodata(Repo *repo, Id entry, Id keyname)
+{
+  Repodata *data;
+  int rdid;
+  Id type;
+
+  if (entry == SOLVID_POS)
+    {
+      Pool *pool = repo->pool;
+      return pool->pos.repo == repo && pool->pos.repodataid ? pool->pos.repo->repodata + pool->pos.repodataid : 0;
+    }
+  for (rdid = repo->nrepodata - 1, data = repo->repodata + rdid; rdid > 0; rdid--, data--)
+    {
+      if (entry != SOLVID_META && (entry < data->start || entry >= data->end))
+	continue;
+      if (!repodata_precheck_keyname(data, keyname))
+	continue;
+      if ((type = repodata_lookup_type(data, entry, keyname)) != 0)
+        return type == REPOKEY_TYPE_DELETED ? 0 : data;
+    }
+  return 0;
+}
+
+/* like repo_lookup_repodata, but may return a repodata that contains no match instead of NULL */
+Repodata *
+repo_lookup_repodata_opt(Repo *repo, Id entry, Id keyname)
+{
+  Repodata *data, *found = 0;
+  int rdid;
+  Id type;
+
+  if (entry == SOLVID_POS)
+    {
+      Pool *pool = repo->pool;
+      return pool->pos.repo == repo && pool->pos.repodataid ? pool->pos.repo->repodata + pool->pos.repodataid : 0;
+    }
+  for (rdid = repo->nrepodata - 1, data = repo->repodata + rdid; rdid > 0; rdid--, data--)
+    {
+      if (entry != SOLVID_META && (entry < data->start || entry >= data->end))
+	continue;
+      if (!repodata_precheck_keyname(data, keyname))
+	continue;
+      if (found && (type = repodata_lookup_type(found, entry, keyname)) != 0)
+	return type == REPOKEY_TYPE_DELETED ? 0 : found;
+      found = data;
+    }
+  return found;
+}
+
+Repodata *
+repo_lookup_filelist_repodata(Repo *repo, Id entry, Datamatcher *matcher)
+{
+  Repodata *data;
+  int haveextension;
+  int rdid;
+  Id type;
+
+  if (entry <= 0 || !matcher || !matcher->match || ((matcher->flags & (SEARCH_STRINGMASK|SEARCH_NOCASE)) != SEARCH_STRING
+      && (matcher->flags & (SEARCH_STRINGMASK|SEARCH_NOCASE)) != SEARCH_GLOB))
+    return repo_lookup_repodata_opt(repo, entry, SOLVABLE_FILELIST);	/* cannot use filtered filelist */
+
+  haveextension = 0;
+  for (rdid = repo->nrepodata - 1, data = repo->repodata + rdid; rdid > 0; rdid--, data--)
+    {    
+      if (entry < data->start || entry >= data->end)
+	continue;
+      if (data->filelisttype == REPODATA_FILELIST_FILTERED)
+	{
+	  if (data->state != REPODATA_AVAILABLE)
+	    {
+	      if (data->state != REPODATA_STUB)
+		continue;
+	      repodata_load(data);
+	      if (data->state != REPODATA_AVAILABLE || entry < data->start || entry >= data->end)
+		continue;
+	    }
+	  /* does this contain any data about the solvable we're looking for? */
+	  if (!data->incoreoffset[entry - data->start])
+	    continue;	/* no, ignore */
+	  if (haveextension && repodata_filelistfilter_matches(data, matcher->match))
+	    return data;
+	  break;	/* fall back to normal code */
+	}
+      if (!repodata_has_keyname(data, SOLVABLE_FILELIST))
+	continue;
+      if (data->filelisttype == REPODATA_FILELIST_EXTENSION)
+	{
+	  haveextension++;
+	  continue;
+	}
+      if ((type = repodata_lookup_type(data, entry, SOLVABLE_FILELIST)) != 0)
+	{
+	  if (haveextension)
+	    break;		/* need to look in extension */
+	  return type == REPOKEY_TYPE_DELETED ? 0 : data;
+	}
+    }
+  /* cannot use filtered filelist */
+  return repo_lookup_repodata_opt(repo, entry, SOLVABLE_FILELIST);
+}
+
+
+/* the keyskip array has the following format:
+ * 0: keyname area size
+ * 1: repoid base
+ * 2: repoid end
+ * 3: entry for keyname 0
+ * 4: entry for keyname 1
+ * ...
+ */
+Id *
+repo_create_keyskip(Repo *repo, Id entry, Id **oldkeyskip)
+{
+  Repodata *data, *last = 0;
+  Id *keyskip;
+  int rdid, cnt = 0;
+
+  if (repo->nrepodata <= 2)
+    return 0;	/* just one repodata, nothing to filter */
+  keyskip = oldkeyskip ? *oldkeyskip : 0;
+  if (keyskip)
+    {
+      if (keyskip[1] >= 0x10000000)
+	keyskip = solv_free(keyskip);
+      else
+        keyskip[1] = keyskip[2];
+    }
+  FOR_REPODATAS(repo, rdid, data)
+    {
+      if (entry != SOLVID_META)
+	{
+	  if (data->state != REPODATA_AVAILABLE && data->state != REPODATA_LOADING)
+	    {
+	      if (data->state != REPODATA_STUB)
+		continue;
+	      repodata_load(data);
+	      if (data->state != REPODATA_AVAILABLE)
+		continue;
+	    }
+	  if ((entry < data->start || entry >= data->end))
+	    continue;
+	  if (!data->incoreoffset[entry - data->start])
+            continue;
+	}
+      if (last)
+        keyskip = repodata_fill_keyskip(last, entry, keyskip);
+      last = data;
+      cnt++;
+    }
+  if (cnt <= 1)
+    {
+      if (oldkeyskip)
+	*oldkeyskip = keyskip;
+      return 0;
+    }
+  keyskip = repodata_fill_keyskip(last, entry, keyskip);
+  if (keyskip)
+    keyskip[2] = keyskip[1] + repo->nrepodata;
+  if (oldkeyskip)
+    *oldkeyskip = keyskip;
+  return keyskip;
 }
 
 const char *
 repo_lookup_str(Repo *repo, Id entry, Id keyname)
 {
-  Pool *pool = repo->pool;
   Repodata *data;
-  int i;
-  const char *str;
 
   if (entry >= 0)
     {
+      Pool *pool = repo->pool;
       switch (keyname)
 	{
 	case SOLVABLE_NAME:
@@ -932,63 +1110,33 @@ repo_lookup_str(Repo *repo, Id entry, Id keyname)
 	  return pool_id2str(pool, pool->solvables[entry].vendor);
 	}
     }
-  else if (entry == SOLVID_POS && pool->pos.repo == repo && pool->pos.repodataid)
-    return repodata_lookup_str(pool->pos.repo->repodata + pool->pos.repodataid, entry, keyname);
-  FOR_REPODATAS(repo, i, data)
-    {
-      if (entry != SOLVID_META && (entry < data->start || entry >= data->end))
-	continue;
-      if (!repodata_precheck_keyname(data, keyname))
-	continue;
-      str = repodata_lookup_str(data, entry, keyname);
-      if (str)
-	return str;
-      if (repodata_lookup_type(data, entry, keyname))
-	return 0;
-    }
-  return 0;
+  data = repo_lookup_repodata_opt(repo, entry, keyname);
+  return data ? repodata_lookup_str(data, entry, keyname) : 0;
 }
 
 
 unsigned long long
 repo_lookup_num(Repo *repo, Id entry, Id keyname, unsigned long long notfound)
 {
-  Pool *pool = repo->pool;
   Repodata *data;
-  int i;
-  unsigned long long value;
 
   if (entry >= 0)
     {
       if (keyname == RPM_RPMDBID)
 	{
 	  if (repo->rpmdbid && entry >= repo->start && entry < repo->end)
-	    return repo->rpmdbid[entry - repo->start];
+	    return (unsigned int)repo->rpmdbid[entry - repo->start];
 	  return notfound;
 	}
     }
-  else if (entry == SOLVID_POS && pool->pos.repo == repo && pool->pos.repodataid)
-    return repodata_lookup_num(pool->pos.repo->repodata + pool->pos.repodataid, entry, keyname, &value) ? value : notfound;
-  FOR_REPODATAS(repo, i, data)
-    {
-      if (entry != SOLVID_META && (entry < data->start || entry >= data->end))
-	continue;
-      if (!repodata_precheck_keyname(data, keyname))
-	continue;
-      if (repodata_lookup_num(data, entry, keyname, &value))
-	return value;
-      if (repodata_lookup_type(data, entry, keyname))
-	return notfound;
-    }
-  return notfound;
+  data = repo_lookup_repodata_opt(repo, entry, keyname);
+  return data ? repodata_lookup_num(data, entry, keyname, notfound) : notfound;
 }
 
 Id
 repo_lookup_id(Repo *repo, Id entry, Id keyname)
 {
-  Pool *pool = repo->pool;
   Repodata *data;
-  int i;
   Id id;
 
   if (entry >= 0)
@@ -1005,97 +1153,49 @@ repo_lookup_id(Repo *repo, Id entry, Id keyname)
 	  return repo->pool->solvables[entry].vendor;
 	}
     }
-  else if (entry == SOLVID_POS && pool->pos.repo == repo && pool->pos.repodataid)
-    {
-      Repodata *data = pool->pos.repo->repodata + pool->pos.repodataid;
-      Id id = repodata_lookup_id(data, entry, keyname);
-      return data->localpool ? repodata_globalize_id(data, id, 1) : id;
-    }
-  FOR_REPODATAS(repo, i, data)
-    {
-      if (entry != SOLVID_META && (entry < data->start || entry >= data->end))
-	continue;
-      if (!repodata_precheck_keyname(data, keyname))
-	continue;
-      id = repodata_lookup_id(data, entry, keyname);
-      if (id)
-	return data->localpool ? repodata_globalize_id(data, id, 1) : id;
-      if (repodata_lookup_type(data, entry, keyname))
-	return 0;
-    }
+  data = repo_lookup_repodata_opt(repo, entry, keyname);
+  if (data && (id = repodata_lookup_id(data, entry, keyname)) != 0)
+    return data->localpool ? repodata_globalize_id(data, id, 1) : id;
   return 0;
-}
-
-static int
-lookup_idarray_solvable(Repo *repo, Offset off, Queue *q)
-{
-  Id *p;
-
-  queue_empty(q);
-  if (off)
-    for (p = repo->idarraydata + off; *p; p++)
-      queue_push(q, *p);
-  return 1;
 }
 
 int
 repo_lookup_idarray(Repo *repo, Id entry, Id keyname, Queue *q)
 {
-  Pool *pool = repo->pool;
   Repodata *data;
   int i;
   if (entry >= 0)
     {
+      Offset *offp;
       switch (keyname)
         {
 	case SOLVABLE_PROVIDES:
-	  return lookup_idarray_solvable(repo, repo->pool->solvables[entry].provides, q);
 	case SOLVABLE_OBSOLETES:
-	  return lookup_idarray_solvable(repo, repo->pool->solvables[entry].obsoletes, q);
 	case SOLVABLE_CONFLICTS:
-	  return lookup_idarray_solvable(repo, repo->pool->solvables[entry].conflicts, q);
 	case SOLVABLE_REQUIRES:
-	  return lookup_idarray_solvable(repo, repo->pool->solvables[entry].requires, q);
 	case SOLVABLE_RECOMMENDS:
-	  return lookup_idarray_solvable(repo, repo->pool->solvables[entry].recommends, q);
 	case SOLVABLE_SUGGESTS:
-	  return lookup_idarray_solvable(repo, repo->pool->solvables[entry].suggests, q);
 	case SOLVABLE_SUPPLEMENTS:
-	  return lookup_idarray_solvable(repo, repo->pool->solvables[entry].supplements, q);
 	case SOLVABLE_ENHANCES:
-	  return lookup_idarray_solvable(repo, repo->pool->solvables[entry].enhances, q);
+	  offp = solvable_offsetptr(repo->pool->solvables + entry, keyname);
+	  if (*offp)
+	    {
+	      Id *p;
+	      for (p = repo->idarraydata + *offp; *p; p++)
+	        queue_push(q, *p);
+	    }
+	  return 1;
         }
     }
-  else if (entry == SOLVID_POS && pool->pos.repo == repo && pool->pos.repodataid)
+  data = repo_lookup_repodata_opt(repo, entry, keyname);
+  if (data && repodata_lookup_idarray(data, entry, keyname, q))
     {
-      Repodata *data = pool->pos.repo->repodata + pool->pos.repodataid;
-      if (repodata_lookup_idarray(data, entry, keyname, q))
+      if (data->localpool)
 	{
-	  if (data->localpool)
-	    {
-	      for (i = 0; i < q->count; i++)
-		q->elements[i] = repodata_globalize_id(data, q->elements[i], 1);
-	    }
-	  return 1;
+	  for (i = 0; i < q->count; i++)
+	    q->elements[i] = repodata_globalize_id(data, q->elements[i], 1);
 	}
-    }
-  FOR_REPODATAS(repo, i, data)
-    {
-      if (entry != SOLVID_META && (entry < data->start || entry >= data->end))
-	continue;
-      if (!repodata_precheck_keyname(data, keyname))
-	continue;
-      if (repodata_lookup_idarray(data, entry, keyname, q))
-	{
-	  if (data->localpool)
-	    {
-	      for (i = 0; i < q->count; i++)
-		q->elements[i] = repodata_globalize_id(data, q->elements[i], 1);
-	    }
-	  return 1;
-	}
-      if (repodata_lookup_type(data, entry, keyname))
-	break;
+      return 1;
     }
   queue_empty(q);
   return 0;
@@ -1139,25 +1239,10 @@ repo_lookup_deparray(Repo *repo, Id entry, Id keyname, Queue *q, Id marker)
 const unsigned char *
 repo_lookup_bin_checksum(Repo *repo, Id entry, Id keyname, Id *typep)
 {
-  Pool *pool = repo->pool;
-  Repodata *data;
-  int i;
   const unsigned char *chk;
-
-  if (entry == SOLVID_POS && pool->pos.repo == repo && pool->pos.repodataid)
-    return repodata_lookup_bin_checksum(pool->pos.repo->repodata + pool->pos.repodataid, entry, keyname, typep);
-  FOR_REPODATAS(repo, i, data)
-    {
-      if (entry != SOLVID_META && (entry < data->start || entry >= data->end))
-	continue;
-      if (!repodata_precheck_keyname(data, keyname))
-	continue;
-      chk = repodata_lookup_bin_checksum(data, entry, keyname, typep);
-      if (chk)
-	return chk;
-      if (repodata_lookup_type(data, entry, keyname))
-	return 0;
-    }
+  Repodata *data = repo_lookup_repodata_opt(repo, entry, keyname);
+  if (data && (chk = repodata_lookup_bin_checksum(data, entry, keyname, typep)) != 0)
+    return chk;
   *typep = 0;
   return 0;
 }
@@ -1172,71 +1257,65 @@ repo_lookup_checksum(Repo *repo, Id entry, Id keyname, Id *typep)
 int
 repo_lookup_void(Repo *repo, Id entry, Id keyname)
 {
-  Pool *pool = repo->pool;
-  Repodata *data;
-  int i;
-  Id type;
-
-  if (entry == SOLVID_POS && pool->pos.repo == repo && pool->pos.repodataid)
-    return repodata_lookup_void(pool->pos.repo->repodata + pool->pos.repodataid, entry, keyname);
-  FOR_REPODATAS(repo, i, data)
-    {
-      if (entry != SOLVID_META && (entry < data->start || entry >= data->end))
-	continue;
-      if (!repodata_precheck_keyname(data, keyname))
-	continue;
-      type = repodata_lookup_type(data, entry, keyname);
-      if (type)
-	return type == REPOKEY_TYPE_VOID;
-    }
+  Repodata *data = repo_lookup_repodata_opt(repo, entry, keyname);
+  if (data)
+    return repodata_lookup_void(data, entry, keyname);
   return 0;
 }
 
 Id
 repo_lookup_type(Repo *repo, Id entry, Id keyname)
 {
-  Pool *pool = repo->pool;
-  Repodata *data;
-  int i;
   Id type;
-
-  if (entry == SOLVID_POS && pool->pos.repo == repo && pool->pos.repodataid)
-    return repodata_lookup_type(pool->pos.repo->repodata + pool->pos.repodataid, entry, keyname);
-  FOR_REPODATAS(repo, i, data)
-    {
-      if (entry != SOLVID_META && (entry < data->start || entry >= data->end))
-	continue;
-      if (!repodata_precheck_keyname(data, keyname))
-	continue;
-      type = repodata_lookup_type(data, entry, keyname);
-      if (type)
-	return type == REPOKEY_TYPE_DELETED ? 0 : type;
-    }
+  Repodata *data;
+  if (keyname >= SOLVABLE_NAME && keyname <= RPM_RPMDBID)
+    return repo_solvablekeys[keyname - SOLVABLE_NAME].type;
+  data = repo_lookup_repodata_opt(repo, entry, keyname);
+  if (data && (type = repodata_lookup_type(data, entry, keyname)) != 0 && type != REPOKEY_TYPE_DELETED)
+    return type;
   return 0;
 }
 
 const void *
 repo_lookup_binary(Repo *repo, Id entry, Id keyname, int *lenp)
 {
-  Pool *pool = repo->pool;
-  Repodata *data;
-  int i;
   const void *bin;
-
-  if (entry == SOLVID_POS && pool->pos.repo == repo && pool->pos.repodataid)
-    return repodata_lookup_binary(pool->pos.repo->repodata + pool->pos.repodataid, entry, keyname, lenp);
-  FOR_REPODATAS(repo, i, data)
-    {
-      if (entry != SOLVID_META && (entry < data->start || entry >= data->end))
-	continue;
-      if (!repodata_precheck_keyname(data, keyname))
-	continue;
-      bin = repodata_lookup_binary(data, entry, keyname, lenp);
-      if (bin)
-	return bin;
-    }
+  Repodata *data = repo_lookup_repodata_opt(repo, entry, keyname);
+  if (data && (bin = repodata_lookup_binary(data, entry, keyname, lenp)) != 0)
+    return bin;
   *lenp = 0;
   return 0;
+}
+
+unsigned int
+repo_lookup_count(Repo *repo, Id entry, Id keyname)
+{
+  Repodata *data;
+  if (keyname >= SOLVABLE_NAME && keyname <= RPM_RPMDBID)
+  if (entry >= 0 && keyname >= SOLVABLE_NAME && keyname <= RPM_RPMDBID)
+    {
+      Id *p;
+      Offset *offp;
+      unsigned int cnt;
+      switch (keyname)
+        {
+	case SOLVABLE_PROVIDES:
+	case SOLVABLE_OBSOLETES:
+	case SOLVABLE_CONFLICTS:
+	case SOLVABLE_REQUIRES:
+	case SOLVABLE_RECOMMENDS:
+	case SOLVABLE_SUGGESTS:
+	case SOLVABLE_SUPPLEMENTS:
+	case SOLVABLE_ENHANCES:
+	  offp = solvable_offsetptr(repo->pool->solvables + entry, keyname);
+	  for (cnt = 0, p = repo->idarraydata + *offp; *p; p++)
+	    cnt++;
+	  return cnt;
+        }
+      return 1;
+    }
+  data = repo_lookup_repodata_opt(repo, entry, keyname);
+  return data ? repodata_lookup_count(data, entry, keyname) : 0;
 }
 
 /***********************************************************************/
@@ -1335,7 +1414,7 @@ repo_set_num(Repo *repo, Id p, Id keyname, unsigned long long num)
 	{
 	  if (!repo->rpmdbid)
 	    repo->rpmdbid = repo_sidedata_create(repo, sizeof(Id));
-	  repo->rpmdbid[p - repo->start] = num;
+	  repo->rpmdbid[p - repo->start] = (Id)num;
 	  return;
 	}
     }
@@ -1398,32 +1477,19 @@ repo_add_deparray(Repo *repo, Id p, Id keyname, Id dep, Id marker)
     marker = solv_depmarker(keyname, marker);
   if (p >= 0)
     {
-      Solvable *s = repo->pool->solvables + p;
+      Offset *offp;
       switch (keyname)
 	{
 	case SOLVABLE_PROVIDES:
-	  s->provides = repo_addid_dep(repo, s->provides, dep, marker);
-	  return;
 	case SOLVABLE_OBSOLETES:
-	  s->obsoletes = repo_addid_dep(repo, s->obsoletes, dep, marker);
-	  return;
 	case SOLVABLE_CONFLICTS:
-	  s->conflicts = repo_addid_dep(repo, s->conflicts, dep, marker);
-	  return;
 	case SOLVABLE_REQUIRES:
-	  s->requires = repo_addid_dep(repo, s->requires, dep, marker);
-	  return;
 	case SOLVABLE_RECOMMENDS:
-	  s->recommends = repo_addid_dep(repo, s->recommends, dep, marker);
-	  return;
 	case SOLVABLE_SUGGESTS:
-	  s->suggests = repo_addid_dep(repo, s->suggests, dep, marker);
-	  return;
 	case SOLVABLE_SUPPLEMENTS:
-	  s->supplements = repo_addid_dep(repo, s->supplements, dep, marker);
-	  return;
 	case SOLVABLE_ENHANCES:
-	  s->enhances = repo_addid_dep(repo, s->enhances, dep, marker);
+	  offp = solvable_offsetptr(repo->pool->solvables + p, keyname);
+	  *offp = repo_addid_dep(repo, *offp, dep, marker);
 	  return;
 	}
     }
@@ -1435,16 +1501,6 @@ void
 repo_add_idarray(Repo *repo, Id p, Id keyname, Id id)
 {
   repo_add_deparray(repo, p, keyname, id, 0);
-}
-
-static Offset
-repo_set_idarray_solvable(Repo *repo, Queue *q)
-{
-  Offset o = 0;
-  int i;
-  for (i = 0; i < q->count; i++)
-    repo_addid_dep(repo, o, q->elements[i], 0);
-  return o;
 }
 
 void
@@ -1481,32 +1537,23 @@ repo_set_deparray(Repo *repo, Id p, Id keyname, Queue *q, Id marker)
     }
   if (p >= 0)
     {
-      Solvable *s = repo->pool->solvables + p;
+      Offset off, *offp;
+      int i;
       switch (keyname)
 	{
 	case SOLVABLE_PROVIDES:
-	  s->provides = repo_set_idarray_solvable(repo, q);
-	  return;
 	case SOLVABLE_OBSOLETES:
-	  s->obsoletes = repo_set_idarray_solvable(repo, q);
-	  return;
 	case SOLVABLE_CONFLICTS:
-	  s->conflicts = repo_set_idarray_solvable(repo, q);
-	  return;
 	case SOLVABLE_REQUIRES:
-	  s->requires = repo_set_idarray_solvable(repo, q);
-	  return;
 	case SOLVABLE_RECOMMENDS:
-	  s->recommends = repo_set_idarray_solvable(repo, q);
-	  return;
 	case SOLVABLE_SUGGESTS:
-	  s->suggests = repo_set_idarray_solvable(repo, q);
-	  return;
 	case SOLVABLE_SUPPLEMENTS:
-	  s->supplements = repo_set_idarray_solvable(repo, q);
-	  return;
 	case SOLVABLE_ENHANCES:
-	  s->enhances = repo_set_idarray_solvable(repo, q);
+	  off = 0;
+	  for (i = 0; i < q->count; i++)
+	    off = repo_addid_dep(repo, off, q->elements[i], 0);
+	  offp = solvable_offsetptr(repo->pool->solvables + p, keyname);
+	  *offp = off;
 	  return;
 	}
     }

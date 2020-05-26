@@ -56,11 +56,11 @@ prune_to_best_version_sortcmp(const void *ap, const void *bp, void *dp)
     }
   if (sa->arch != sb->arch)
     {
-      int aa, ab;
-      aa = (sa->arch <= pool->lastarch) ? pool->id2arch[sa->arch] : 0;
-      ab = (sb->arch <= pool->lastarch) ? pool->id2arch[sb->arch] : 0;
+      unsigned int aa, ab;
+      aa = pool_arch2score(pool, sa->arch);
+      ab = pool_arch2score(pool, sb->arch);
       if (aa != ab && aa > 1 && ab > 1)
-	return aa - ab;		/* lowest score first */
+	return aa < ab ? -1 : 1;	/* lowest score first */
     }
 
   /* the same name, bring installed solvables to the front */
@@ -145,7 +145,7 @@ solver_prune_installed_dup_packages(Solver *solv, Queue *plist)
       Solvable *s = pool->solvables + p;
       if (s->repo != pool->installed && s->repo->priority < bestprio)
 	continue;
-      if (s->repo == pool->installed && (solv->dupmap_all || (solv->dupinvolvedmap.size && MAPTST(&solv->dupinvolvedmap, p))))
+      if (s->repo == pool->installed && (solv->dupinvolvedmap_all || (solv->dupinvolvedmap.size && MAPTST(&solv->dupinvolvedmap, p))))
 	{
 	  Id p2, pp2;
 	  int keepit = 0;
@@ -181,7 +181,7 @@ static inline void
 solver_prune_to_highest_prio(Solver *solv, Queue *plist)
 {
   prune_to_highest_prio(solv->pool, plist);
-  if (plist->count > 1 && solv->pool->installed && (solv->dupmap_all || solv->dupinvolvedmap.size))
+  if (plist->count > 1 && solv->pool->installed && (solv->dupinvolvedmap_all || solv->dupinvolvedmap.size))
     solver_prune_installed_dup_packages(solv, plist);
 }
 
@@ -202,14 +202,14 @@ solver_prune_to_highest_prio_per_name(Solver *solv, Queue *plist)
     {
       if (pool->solvables[plist->elements[i]].name != name)
 	{
+	  name = pool->solvables[plist->elements[i]].name;
 	  if (pq.count > 2)
 	    solver_prune_to_highest_prio(solv, &pq);
 	  for (k = 0; k < pq.count; k++)
 	    plist->elements[j++] = pq.elements[k];
 	  queue_empty(&pq);
-	  queue_push(&pq, plist->elements[i]);
-	  name = pool->solvables[pq.elements[0]].name;
 	}
+      queue_push(&pq, plist->elements[i]);
     }
   if (pq.count > 2)
     solver_prune_to_highest_prio(solv, &pq);
@@ -454,86 +454,18 @@ prefer_suggested(Solver *solv, Queue *plist)
 }
 
 static int
-sort_by_favorq_cmp(const void *ap, const void *bp, void *dp)
+sort_by_favor_cmp(const void *ap, const void *bp, void *dp)
 {
   const Id *a = ap, *b = bp, *d = dp;
   return d[b[0]] - d[a[0]];
-}
-
-static void
-sort_by_favorq(Queue *favorq, Id *el, int cnt)
-{
-  int i;
-  /* map to offsets into favorq */
-  for (i = 0; i < cnt; i++)
-    {
-      Id p = el[i];
-      /* lookup p in sorted favorq */
-      int med = 0, low = 0;
-      int high = favorq->count / 2;
-      while (low != high)
-	{
-	  med = (low + high) / 2;
-	  Id pp = favorq->elements[2 * med];
-	  if (pp < p)
-	    low = med;
-	  else if (pp > p)
-	    high = med;
-	  else
-	    break;
-	}
-      while(med && favorq->elements[2 * med - 2] == p)
-	med--;
-      if (favorq->elements[2 * med] == p)
-        el[i] = 2 * med + 1;
-      else
-        el[i] = 0;	/* hmm */
-    }
-  /* sort by position */
-  solv_sort(el, cnt, sizeof(Id), sort_by_favorq_cmp, favorq->elements);
-  /* map back */
-  for (i = 0; i < cnt; i++)
-    if (el[i])
-      el[i] = favorq->elements[el[i] - 1];
 }
 
 /* bring favored packages to front and disfavored packages to back */
 void
 policy_prefer_favored(Solver *solv, Queue *plist)
 {
-  int i, fav, disfav, count;
-  if (!solv->favormap.size)
-    return;
-  for (i = fav = disfav = 0, count = plist->count; i < count; i++)
-    {
-      Id p = plist->elements[i];
-      if (!MAPTST(&solv->favormap, p))
-	continue;
-      if (solv->isdisfavormap.size && MAPTST(&solv->isdisfavormap, p))
-	{
-	  /* disfavored package. bring to back */
-	 if (i < plist->count - 1)
-	    {
-	      memmove(plist->elements + i, plist->elements + i + 1, (plist->count - 1 - i) * sizeof(Id));
-	      plist->elements[plist->count - 1] = p;
-	    }
-	  i--;
-	  count--;
-	  disfav++;
-	}
-      else
-	{
-	  /* favored package. bring to front */
-	  if (i > fav)
-	    memmove(plist->elements + fav + 1, plist->elements + fav, (i - fav) * sizeof(Id));
-	  plist->elements[fav++] = p;
-	}
-    }
-  /* if we have multiple favored/disfavored packages, sort by favorq index */
-  if (fav > 1)
-    sort_by_favorq(solv->favorq, plist->elements, fav);
-  if (disfav > 1)
-    sort_by_favorq(solv->favorq, plist->elements + plist->count - disfav, disfav);
+  if (solv->favormap && plist->count > 1)
+    solv_sort(plist->elements, plist->count, sizeof(Id), sort_by_favor_cmp, solv->favormap);
 }
 
 /*
@@ -646,8 +578,7 @@ prune_to_best_arch(const Pool *pool, Queue *plist)
   for (i = 0; i < plist->count; i++)
     {
       s = pool->solvables + plist->elements[i];
-      a = s->arch;
-      a = (a <= pool->lastarch) ? pool->id2arch[a] : 0;
+      a = pool_arch2score(pool, s->arch);
       if (a && a != 1 && (!bestscore || a < bestscore))
 	bestscore = a;
     }
@@ -656,10 +587,9 @@ prune_to_best_arch(const Pool *pool, Queue *plist)
   for (i = j = 0; i < plist->count; i++)
     {
       s = pool->solvables + plist->elements[i];
-      a = s->arch;
-      if (a > pool->lastarch)
+      a = pool_arch2score(pool, s->arch);
+      if (!a)
 	continue;
-      a = pool->id2arch[a];
       /* a == 1 -> noarch */
       if (a != 1 && ((a ^ bestscore) & 0xffff0000) != 0)
 	continue;
@@ -868,6 +798,8 @@ move_installed_to_front(Pool *pool, Queue *plist)
   Solvable *s;
   Id p, pp;
 
+  if (!pool->installed)
+    return;
   for (i = j = 0; i < plist->count; i++)
     {
       s = pool->solvables + plist->elements[i];
@@ -901,6 +833,32 @@ move_installed_to_front(Pool *pool, Queue *plist)
     }
 }
 
+static int
+pool_buildversioncmp(Pool *pool, Solvable *s1, Solvable *s2)
+{
+  const char *bv1, *bv2;
+  unsigned int cnt1, cnt2;
+  cnt1 = solvable_lookup_count(s1, SOLVABLE_TRACK_FEATURES);
+  cnt2 = solvable_lookup_count(s2, SOLVABLE_TRACK_FEATURES);
+  if (cnt1 != cnt2)
+    return cnt1 > cnt2 ? -1 : 1;
+  bv1 = solvable_lookup_str(s1, SOLVABLE_BUILDVERSION);
+  bv2 = solvable_lookup_str(s2, SOLVABLE_BUILDVERSION);
+  if (!bv1 && !bv2)
+    return 0;
+  return pool_evrcmp_str(pool, bv1 ? bv1 : "" , bv2 ? bv2 : "", EVRCMP_COMPARE);
+}
+
+static int
+pool_buildflavorcmp(Pool *pool, Solvable *s1, Solvable *s2)
+{
+  const char *f1 = solvable_lookup_str(s1, SOLVABLE_BUILDFLAVOR);
+  const char *f2 = solvable_lookup_str(s2, SOLVABLE_BUILDFLAVOR);
+  if (!f1 && !f2)
+    return 0;
+  return pool_evrcmp_str(pool, f1 ? f1 : "" , f2 ? f2 : "", EVRCMP_COMPARE);
+}
+
 /*
  * prune_to_best_version
  *
@@ -926,9 +884,9 @@ prune_to_best_version(Pool *pool, Queue *plist)
     {
       s = pool->solvables + plist->elements[i];
 
-      POOL_DEBUG(SOLV_DEBUG_POLICY, "- %s[%s]\n",
-		 pool_solvable2str(pool, s),
-		 (pool->installed && s->repo == pool->installed) ? "installed" : "not installed");
+      POOL_DEBUG(SOLV_DEBUG_POLICY, "- %s [%d]%s\n",
+		 pool_solvable2str(pool, s), plist->elements[i], 
+		 (pool->installed && s->repo == pool->installed) ? "I" : "");
 
       if (!best)		/* if no best yet, the current is best */
         {
@@ -948,6 +906,10 @@ prune_to_best_version(Pool *pool, Queue *plist)
       if (r == 0 && has_package_link(pool, s))
         r = pool_link_evrcmp(pool, best, s);
 #endif
+      if (r == 0 && pool->disttype == DISTTYPE_CONDA)
+	r = pool_buildversioncmp(pool, best, s);
+      if (r == 0 && pool->disttype == DISTTYPE_CONDA)
+	r = pool_buildflavorcmp(pool, best, s);
       if (r < 0)
 	best = s;
     }
@@ -963,8 +925,6 @@ prune_to_best_version(Pool *pool, Queue *plist)
       else
         prune_obsoleted(pool, plist);
     }
-  if (plist->count > 1 && pool->installed)
-    move_installed_to_front(pool, plist);
 }
 
 
@@ -1238,7 +1198,7 @@ urpm_reorder(Solver *solv, Queue *plist)
 		    {
 		      char kn[256];
 		      Id p, pp, knid;
-		      memcpy(kn, "kernel", 8);
+		      memcpy(kn, "kernel", 7);
 		      memcpy(kn + 6, flavor, release - flavor + 1);
 		      memcpy(kn + 6 + (release - flavor) + 1, sn, flavor - sn);
 		      strcpy(kn + 6 + (release + 1 - sn), release);
@@ -1302,6 +1262,37 @@ urpm_reorder(Solver *solv, Queue *plist)
   queue_truncate(plist, count);
 }
 
+/* support multiple favor groups by calling policy_filter_unwanted on
+ * each of them and combining the result */
+static void
+policy_filter_unwanted_favored(Solver *solv, Queue *plist, int mode)
+{
+  int i, j, f;
+  Queue qin, qprune;
+  queue_init_clone(&qin, plist);
+  queue_empty(plist);
+  /* sort by favor group */
+  solv_sort(qin.elements, qin.count, sizeof(Id), sort_by_favor_cmp, solv->favormap);
+  /* go over groups */
+  queue_init(&qprune);
+  for (i = 0; i < qin.count; i = j)
+    {
+      /* find end of group */
+      f = solv->favormap[qin.elements[i]];
+      for (j = i + 1; j < qin.count; j++)
+	if (solv->favormap[qin.elements[j]] != f)
+	  break;
+      /* prune this group */
+      queue_empty(&qprune);
+      queue_insertn(&qprune, 0, j, qin.elements);
+      policy_filter_unwanted(solv, &qprune, mode | POLICY_MODE_FAVOR_REC);
+      for (i = 0; i < qprune.count; i++)
+	if (solv->favormap[qprune.elements[i]] == f)
+	  queue_push(plist, qprune.elements[i]);
+    }
+  queue_free(&qprune);
+  queue_free(&qin);
+}
 
 /*
  *  POLICY_MODE_CHOOSE:     default, do all pruning steps
@@ -1322,6 +1313,21 @@ policy_filter_unwanted(Solver *solv, Queue *plist, int mode)
       prefer_suggested(solv, plist);
       policy_prefer_favored(solv, plist);
       return;
+    }
+  if (mode & POLICY_MODE_FAVOR_REC)
+    mode ^= POLICY_MODE_FAVOR_REC;
+  else if (solv->favormap && plist->count > 1)
+    {
+      /* check if we have multiple favor groups */
+      int i, f = solv->favormap[plist->elements[0]];
+      for (i = 1; i < plist->count; i++)
+	if (solv->favormap[plist->elements[i]] != f)
+	  break;
+      if (i < plist->count)
+	{
+	  policy_filter_unwanted_favored(solv, plist, mode);
+	  return;
+	}
     }
   if (plist->count > 1)
     {
@@ -1345,11 +1351,29 @@ policy_filter_unwanted(Solver *solv, Queue *plist, int mode)
 #endif
 	  dislike_old_versions(pool, plist);
 	  sort_by_common_dep(pool, plist);
+	  move_installed_to_front(pool, plist);
 	  if (solv->urpmreorder)
 	    urpm_reorder(solv, plist);
 	  prefer_suggested(solv, plist);
 	  policy_prefer_favored(solv, plist);
 	}
+    }
+}
+
+void
+pool_best_solvables(Pool *pool, Queue *plist, int flags)
+{
+  if (plist->count > 1)
+    prune_to_highest_prio(pool, plist);
+  if (plist->count > 1)
+    prune_to_best_arch(pool, plist);
+  if (plist->count > 1)
+    prune_to_best_version(pool, plist);
+  if (plist->count > 1)
+    {
+      dislike_old_versions(pool, plist);
+      sort_by_common_dep(pool, plist);
+      move_installed_to_front(pool, plist);
     }
 }
 
@@ -1367,8 +1391,8 @@ policy_illegal_archchange(Solver *solv, Solvable *s1, Solvable *s2)
     return 0;
   if (!pool->id2arch)
     return 0;
-  a1 = a1 <= pool->lastarch ? pool->id2arch[a1] : 0;
-  a2 = a2 <= pool->lastarch ? pool->id2arch[a2] : 0;
+  a1 = pool_arch2score(pool, a1);
+  a2 = pool_arch2score(pool, a2);
   if (((a1 ^ a2) & 0xffff0000) != 0)
     return 1;
   return 0;
@@ -1408,7 +1432,7 @@ policy_is_illegal(Solver *solv, Solvable *is, Solvable *s, int ignore)
 {
   Pool *pool = solv->pool;
   int ret = 0;
-  int duppkg = solv->dupmap_all ? 1 : 0;
+  int duppkg = solv->dupinvolvedmap_all || (solv->dupinvolvedmap.size && MAPTST(&solv->dupinvolvedmap, is - pool->solvables));
   if (!(ignore & POLICY_ILLEGAL_DOWNGRADE) && !(duppkg ? solv->dup_allowdowngrade : solv->allowdowngrade))
     {
       if (is->name == s->name && pool_evrcmp(pool, is->evr, s->evr, EVRCMP_COMPARE) > 0)
@@ -1561,6 +1585,8 @@ policy_findupdatepackages(Solver *solv, Solvable *s, Queue *qs, int allow_all)
 	continue;
 
       ps = pool->solvables + p;
+      if (pool->considered && pool->whatprovideswithdisabled && ps->repo != pool->installed && pool_disabled_solvable(pool, ps)) 
+	continue;
       if (s->name == ps->name)	/* name match */
 	{
 	  if (pool->implicitobsoleteusescolors && !pool_colormatch(pool, s, ps))

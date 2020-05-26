@@ -120,6 +120,7 @@ SOLV_1.0 {
 		pool_trivial_installable_multiversionmap;
 		pool_vendor2mask;
 		pool_whatmatchesdep;
+		pool_whatmatchessolvable;
 		pool_whatcontainsdep;
 		queue_alloc_one;
 		queue_alloc_one_head;
@@ -145,6 +146,7 @@ SOLV_1.0 {
 		repo_addid;
 		repo_addid_dep;
 		repo_create;
+		repo_create_keyskip;
 		repo_disable_paging;
 		repo_empty;
 		repo_fix_conflicts;
@@ -165,7 +167,6 @@ SOLV_1.0 {
 		repo_lookup_str;
 		repo_lookup_type;
 		repo_lookup_void;
-		repo_matchvalue;
 		repo_reserve_ids;
 		repo_rewrite_suse_deps;
 		repo_search;
@@ -203,12 +204,10 @@ SOLV_1.0 {
 		repodata_key2id;
 		repodata_localize_id;
 		repodata_lookup_bin_checksum;
-		repodata_lookup_bin_checksum_uninternalized;
 		repodata_lookup_binary;
-		repodata_lookup_dirstrarray_uninternalized;
 		repodata_lookup_id;
-		repodata_lookup_id_uninternalized;
 		repodata_lookup_idarray;
+		repodata_lookup_kv_uninternalized;
 		repodata_lookup_num;
 		repodata_lookup_str;
 		repodata_lookup_type;
@@ -219,12 +218,16 @@ SOLV_1.0 {
 		repodata_new_handle;
 		repodata_schema2id;
 		repodata_search;
+		repodata_search_arrayelement;
+		repodata_search_keyskip;
+		repodata_search_uninternalized;
 		repodata_set_binary;
 		repodata_set_bin_checksum;
 		repodata_set_checksum;
 		repodata_set_constant;
 		repodata_set_constantid;
 		repodata_set_deltalocation;
+		repodata_set_filelisttype;
 		repodata_set_id;
 		repodata_set_idarray;
 		repodata_set_location;
@@ -238,17 +241,28 @@ SOLV_1.0 {
 		repodata_str2dir;
 		repodata_stringify;
 		repodata_swap_attrs;
+		repodata_translate_dir_slow;
 		repodata_translate_id;
 		repodata_unset;
 		repodata_unset_uninternalized;
 		repodata_write;
 		repodata_write_filtered;
 		repopagestore_compress_page;
+		repowriter_create;
+		repowriter_free;
+		repowriter_set_flags;
+		repowriter_set_keyfilter;
+		repowriter_set_keyqueue;
+		repowriter_set_repodatarange;
+		repowriter_set_solvablerange;
+		repowriter_write;
 		selection_add;
 		selection_filter;
 		selection_make;
 		selection_make_matchdepid;
 		selection_make_matchdeps;
+		selection_make_matchsolvable;
+		selection_make_matchsolvablelist;
 		selection_solvables;
 		solv_bin2hex;
 		solv_calloc;
@@ -311,6 +325,7 @@ SOLV_1.0 {
 		solvable_lookup_type;
 		solvable_lookup_void;
 		solvable_matchesdep;
+		solvable_matchessolvable;
 		solvable_selfprovidedep;
 		solvable_set_deparray;
 		solvable_set_id;
@@ -334,8 +349,6 @@ SOLV_1.0 {
 		solver_create_transaction;
 		solver_describe_decision;
 		solver_describe_weakdep_decision;
-		solver_disableproblem;
-		solver_enableproblem;
 		solver_findallproblemrules;
 		solver_findproblemrule;
 		solver_free;
@@ -422,3 +435,20 @@ SOLV_1.0 {
 	local:
 		*;
 };
+
+SOLV_1.1 {
+		pool_best_solvables;
+		solver_get_cleandeps;
+} SOLV_1.0;
+
+SOLV_1.2 {
+		map_invertall;
+		pool_set_whatprovides;
+		selection_subtract;
+} SOLV_1.1;
+
+SOLV_1.3 {
+		repodata_set_kv;
+		solv_setcloexec;
+		pool_conda_matchspec;
+} SOLV_1.2;
